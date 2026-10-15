@@ -161,11 +161,19 @@ El esquema de respuesta permite estados `running`, `completed`, `failed` e `inte
 Un solo proyecto y unidad de despliegue, con responsabilidades separadas mediante carpetas:
 
 - `Models`: perfiles, conversaciones, mensajes y metadatos de adjuntos.
-- `Forms`: interfaz y coordinación de acciones del usuario.
+- `Forms/Main`: ventana principal `MainForm`, que aloja las pestañas Chat y Agentes.
+- `Forms/Chat`: `ChatCoordinator`, que conecta eventos de las vistas con operaciones de sesión, catálogo y monitoreo.
+- `Forms/Agents`, `Forms/Groups` y `Forms/Conversations`: editor de agentes, mantenedor de grupos y confirmación de eliminación.
+- `Controls/Chat`: vista del chat, selectores, transcripción y compositor de mensajes.
+- `Controls/Conversations`: barra lateral y lista de conversaciones con selección destacada.
+- `Controls/Agents`: panorámica y diagrama de cada sistema agéntico.
+- `Forms/Theming`: paletas, aplicación de temas y botón compartido.
 - `Services`: contrato JSON, conexión HTTP y preparación de adjuntos.
 - `Persistence`: carga y escritura de archivos locales.
 
 Los conectores no dependen de controles WinForms. La interfaz consume sus operaciones asíncronas para mantener la ventana disponible durante las solicitudes.
+
+Los formularios y controles compuestos separan la disposición en `.Designer.cs`, el comportamiento en `.cs` y los recursos en `.resx`. `ChatSession` mantiene el estado de la sesión; `ChatSessionService` coordina envío, recuperación del borrador y persistencia; `HealthMonitorService` programa las consultas de health y cancela las pendientes al cerrar. Los constructores no cargan archivos ni consultan agentes. Consulta [la estructura y el ciclo de vida](docs/arquitectura.md) para extender un módulo.
 
 ## Verificación
 

@@ -12,6 +12,6 @@ internal static class Program
         // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
         Application.SetColorMode(SystemColorMode.System);
-        Application.Run(new Forms.ChatForm());
+        Application.Run(new Forms.Main.MainForm());
     }
 }

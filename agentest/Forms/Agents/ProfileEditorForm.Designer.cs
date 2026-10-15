@@ -1,31 +1,47 @@
 using agentest.Models;
-using agentest.Services;
 using agentest.Forms.Theming;
-
-namespace agentest.Forms;
-
-public sealed class ProfileEditorForm : Form
+namespace agentest.Forms.Agents;
+public sealed partial class ProfileEditorForm
 {
-    private readonly AgentProfile original;
-    private readonly TextBox name = new(), endpoint = new(), header = new(), prefix = new(), token = new(), extensions = new(), responsePath = new(), conversationPath = new();
-    private readonly ComboBox method = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly NumericUpDown timeout = new() { Minimum = 1, Maximum = 3600 };
-    private readonly NumericUpDown maximum = new() { Minimum = 1, Maximum = 100 };
-    private readonly CheckBox attachments = new() { Text = "Permitir adjuntos", AutoSize = true };
-    private readonly CheckBox backendCreatesConversation = new() { Text = "El backend crea el ID (enviar null al inicio)", AutoSize = true };
-    private readonly TextBox template = new() { Multiline = true, AcceptsReturn = true, AcceptsTab = true, ScrollBars = ScrollBars.Both, WordWrap = false, Font = new Font("Consolas", 10) };
-    public AgentProfile Profile { get; private set; }
-    public string SessionToken => token.Text;
-    private readonly ComboBox agentSystem = new() { DropDownStyle = ComboBoxStyle.DropDownList, Name = "AgentGroup" };
-    private readonly TextBox healthEndpoint = new() { Name = "HealthEndpoint" }, healthPath = new() { Name = "HealthPath" }, healthValue = new() { Name = "HealthValue" }, healthHeader = new(), healthPrefix = new(), healthToken = new();
-    private readonly ComboBox healthMethod = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly NumericUpDown healthInterval = new() { Minimum = 1, Maximum = 86400 }, healthTimeout = new() { Minimum = 1, Maximum = 300 }, healthStatus = new() { Minimum = 100, Maximum = 599 };
-    public string HealthSessionToken => healthToken.Text;
-
-    public ProfileEditorForm(AgentProfile profile, string sessionToken, ThemePalette? palette = null, string healthSessionToken = "", IReadOnlyList<string>? groups = null)
+    private TextBox name = null!, endpoint = null!, header = null!, prefix = null!, token = null!, extensions = null!, responsePath = null!, conversationPath = null!;
+    private ComboBox method = null!;
+    private NumericUpDown timeout = null!;
+    private NumericUpDown maximum = null!;
+    private CheckBox attachments = null!;
+    private CheckBox backendCreatesConversation = null!;
+    private TextBox template = null!;
+    private ComboBox agentSystem = null!;
+    private TextBox healthEndpoint = null!, healthPath = null!, healthValue = null!, healthHeader = null!, healthPrefix = null!, healthToken = null!;
+    private ComboBox healthMethod = null!;
+    private NumericUpDown healthInterval = null!, healthTimeout = null!, healthStatus = null!;
+    private Button save = null!;
+    private void InitializeComponent()
     {
-        original = profile;
-        Profile = profile;
+        name = new();
+        endpoint = new();
+        header = new();
+        prefix = new();
+        token = new();
+        extensions = new();
+        responsePath = new();
+        conversationPath = new();
+        method = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+        timeout = new() { Minimum = 1, Maximum = 3600 };
+        maximum = new() { Minimum = 1, Maximum = 100 };
+        attachments = new() { Text = "Permitir adjuntos", AutoSize = true };
+        backendCreatesConversation = new() { Text = "El backend crea el ID (enviar null al inicio)", AutoSize = true };
+        template = new() { Multiline = true, AcceptsReturn = true, AcceptsTab = true, ScrollBars = ScrollBars.Both, WordWrap = false, Font = new Font("Consolas", 10) };
+        agentSystem = new() { DropDownStyle = ComboBoxStyle.DropDownList, Name = "AgentGroup" };
+        healthEndpoint = new() { Name = "HealthEndpoint" };
+        healthPath = new() { Name = "HealthPath" };
+        healthValue = new() { Name = "HealthValue" };
+        healthHeader = new();
+        healthPrefix = new();
+        healthToken = new();
+        healthMethod = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+        healthInterval = new() { Minimum = 1, Maximum = 86400 };
+        healthTimeout = new() { Minimum = 1, Maximum = 300 };
+        healthStatus = new() { Minimum = 100, Maximum = 599 };
         Text = "Perfil de agente";
         Font = new Font("Segoe UI", 10);
         StartPosition = FormStartPosition.CenterParent;
@@ -65,7 +81,7 @@ public sealed class ProfileEditorForm : Form
         layout.SetColumnSpan(help, 2);
         AddRow(layout, 13, "Plantilla JSON del request", template);
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
-        var save = new ThemeButton { Text = "Guardar", AutoSize = true };
+        save = new ThemeButton { Text = "Guardar", AutoSize = true };
         var cancel = new ThemeButton { Text = "Cancelar", AutoSize = true, DialogResult = DialogResult.Cancel };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
@@ -117,37 +133,7 @@ public sealed class ProfileEditorForm : Form
         root.Controls.Add(buttons, 0, 1);
         Controls.Add(root);
         CancelButton = cancel;
-        name.Text = profile.Name;
-        endpoint.Text = profile.Endpoint;
-        method.SelectedItem = profile.Method;
-        header.Text = profile.AuthenticationHeader;
-        prefix.Text = profile.AuthenticationPrefix;
-        token.Text = sessionToken;
-        timeout.Value = Math.Clamp(profile.TimeoutSeconds, 1, 3600);
-        maximum.Value = Math.Clamp(profile.MaxAttachmentMegabytes, 1, 100);
-        attachments.Checked = profile.AcceptsAttachments;
-        extensions.Text = profile.AllowedExtensions;
-        responsePath.Text = profile.ResponseTextPath;
-        conversationPath.Text = profile.ResponseConversationIdPath;
-        backendCreatesConversation.Checked = profile.BackendCreatesConversation;
-        template.Text = profile.RequestTemplate.ReplaceLineEndings(Environment.NewLine);
-        agentSystem.Items.AddRange((groups ?? new[] { "DEFAULT", profile.AgentSystem }).Distinct(StringComparer.OrdinalIgnoreCase).Cast<object>().ToArray());
-        agentSystem.SelectedItem = agentSystem.Items.Cast<string>().FirstOrDefault(g => string.Equals(g, profile.AgentSystem, StringComparison.OrdinalIgnoreCase)) ?? "DEFAULT";
-        var health = profile.Health;
-        healthEndpoint.Text = health.Endpoint;
-        healthMethod.SelectedItem = health.Method;
-        healthInterval.Value = Math.Clamp(health.IntervalSeconds, 1, 86400);
-        healthTimeout.Value = Math.Clamp(health.TimeoutSeconds, 1, 300);
-        healthStatus.Value = Math.Clamp(health.ExpectedStatusCode, 100, 599);
-        healthPath.Text = health.ResponseValuePath;
-        healthValue.Text = health.ExpectedValue;
-        healthHeader.Text = health.AuthenticationHeader;
-        healthPrefix.Text = health.AuthenticationPrefix;
-        healthToken.Text = healthSessionToken;
-        save.Click += (_, _) => Save();
-        ThemeAppearance.Apply(this, palette ?? ThemePalette.Light);
     }
-
     private static void AddRow(TableLayoutPanel layout, int row, string label, Control control)
     {
         layout.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
@@ -155,38 +141,4 @@ public sealed class ProfileEditorForm : Form
         layout.Controls.Add(control, 1, row);
     }
 
-    private void Save()
-    {
-        var candidate = new AgentProfile
-        {
-            Id = original.Id, Name = name.Text.Trim(), Endpoint = endpoint.Text.Trim(),
-            Method = method.SelectedItem?.ToString() ?? "", AuthenticationHeader = header.Text.Trim(),
-            AuthenticationPrefix = prefix.Text.Trim(), TimeoutSeconds = (int)timeout.Value,
-            AcceptsAttachments = attachments.Checked, AllowedExtensions = extensions.Text.Trim(),
-            MaxAttachmentMegabytes = (int)maximum.Value, ResponseTextPath = responsePath.Text.Trim(),
-            ResponseConversationIdPath = conversationPath.Text.Trim(),
-            BackendCreatesConversation = backendCreatesConversation.Checked,
-            RequestTemplate = template.Text,
-            AgentSystem = agentSystem.SelectedItem?.ToString() ?? "DEFAULT",
-            Health = new HealthSettings
-            {
-                Endpoint = healthEndpoint.Text.Trim(), Method = healthMethod.SelectedItem?.ToString() ?? "",
-                IntervalSeconds = (int)healthInterval.Value, TimeoutSeconds = (int)healthTimeout.Value,
-                ExpectedStatusCode = (int)healthStatus.Value, ResponseValuePath = healthPath.Text.Trim(),
-                ExpectedValue = healthValue.Text, AuthenticationHeader = healthHeader.Text.Trim(),
-                AuthenticationPrefix = healthPrefix.Text.Trim()
-            }
-        };
-        try
-        {
-            OrchestratorClient.ValidateProfile(candidate);
-            HealthClient.Validate(candidate.Health);
-            Profile = candidate;
-            DialogResult = DialogResult.OK;
-        }
-        catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException or FormatException or InvalidOperationException)
-        {
-            MessageBox.Show(this, ex.Message, "Revisa el perfil", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-    }
 }

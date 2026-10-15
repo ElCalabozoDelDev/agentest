@@ -16,6 +16,7 @@ public sealed class LocalStore
     private string ProfilesPath => Path.Combine(RootPath, "profiles.json");
     private string SettingsPath => Path.Combine(RootPath, "settings.json");
     private string ConversationsPath => Path.Combine(RootPath, "conversations");
+    public void EnsureRootDirectory() => Directory.CreateDirectory(RootPath);
 
     public async Task<AppSettings> LoadSettingsAsync()
     {

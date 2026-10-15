@@ -23,7 +23,11 @@ using System.Text.Json.Nodes;
 using agentest.Models;
 using agentest.Persistence;
 using agentest.Services;
-using agentest.Forms;
+using agentest.Forms.Main;
+using agentest.Forms.Agents;
+using agentest.Forms.Groups;
+using agentest.Forms.Conversations;
+using agentest.Controls.Agents;
 using agentest.Forms.Theming;
 
 internal static class Verification
@@ -45,8 +49,9 @@ internal static class Verification
         var data = Path.Combine(AppContext.BaseDirectory, "data");
         RunAsync(data).GetAwaiter().GetResult();
         ApplicationConfiguration.Initialize();
+        VerifyViewConstruction(data);
         var screenshotDirectory = args.FirstOrDefault();
-        using (var form = new ChatForm(new LocalStore(data)))
+        using (var form = new MainForm(new LocalStore(data)))
         {
             form.Show();
             for (int i = 0; i < 150; i++) { Application.DoEvents(); Thread.Sleep(10); }
@@ -96,7 +101,7 @@ internal static class Verification
             form.Close();
         }
         new LocalStore(data).SaveSettingsAsync(new AppSettings { Theme = ThemeMode.Dark }).GetAwaiter().GetResult();
-        using (var restoredForm = new ChatForm(new LocalStore(data)))
+        using (var restoredForm = new MainForm(new LocalStore(data)))
         {
             restoredForm.Show();
             WaitForUi(() => Descendants(restoredForm).OfType<Button>().Any(b => b.Enabled && b.Text.StartsWith("Tema: Oscuro")));
@@ -107,6 +112,7 @@ internal static class Verification
         VerifyGroupManagerIntegration(data);
         VerifyChatSelectors(data, screenshotDirectory);
         VerifyConversationHistory(data, screenshotDirectory);
+        VerifyChatSendUi(data);
         Application.SetColorMode(SystemColorMode.Classic);
         using (var editor = new ProfileEditorForm(new AgentProfile(), "session-secret"))
         {
@@ -202,6 +208,45 @@ internal static class Verification
         Application.DoEvents();
     }
 
+    private static void VerifyViewConstruction(string data)
+    {
+        var root = Path.Combine(data, "construction-only");
+        using var main = new MainForm(new LocalStore(root));
+        using var editor = new ProfileEditorForm();
+        using var groups = new GroupManagerForm();
+        using var deletion = new DeleteConversationForm();
+        using var diagram = new SystemDiagramControl();
+        Check(!Directory.Exists(root), "Constructing views must not load or write runtime files.");
+        Check(Descendants(main).OfType<agentest.Controls.Chat.ChatView>().Count() == 1 && Descendants(main).OfType<AgentsOverviewControl>().Count() == 1, "MainForm should compose independent tab views.");
+        Check(Descendants(main).OfType<agentest.Controls.Chat.MessageComposerControl>().Count() == 1 && Descendants(main).OfType<agentest.Controls.Conversations.ConversationSidebarControl>().Count() == 1, "Chat view modules are missing.");
+    }
+
+    private static void VerifyChatSendUi(string data)
+    {
+        var store = new LocalStore(Path.Combine(data, "send-ui"));
+        var profile = new AgentProfile();
+        Task.Run(() => store.SaveProfilesAsync([profile])).GetAwaiter().GetResult();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = new OrchestratorClient(new FakeBackend(async (_, cancellation) =>
+        {
+            await release.Task.WaitAsync(cancellation);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"answer":"Respuesta modular","conversation_id":"backend-modular"}""") };
+        }));
+        using var form = new MainForm(store, chatClient: client);
+        form.Show();
+        var input = Descendants(form).OfType<TextBox>().Single(t => t.Multiline);
+        WaitForUi(() => input.Enabled);
+        input.Text = "Mensaje desde el compositor";
+        Descendants(form).OfType<Button>().Single(b => b.Text == "Enviar (Ctrl+Enter)").PerformClick();
+        Check(!input.Enabled && Descendants(form).OfType<Button>().Single(b => b.Text.StartsWith("Tema:")).Enabled, "Sending state should disable editing while retaining the theme selector.");
+        release.TrySetResult();
+        WaitForUi(() => input.Enabled && Descendants(form).OfType<RichTextBox>().Single().Text.Contains("Respuesta modular"));
+        Check(input.Text == "" && Descendants(form).OfType<ListBox>().Single(l => l.Name == "AgentConversations").Items.Count == 1, "Sending did not synchronize draft and sidebar across chat controls.");
+        var history = Task.Run(() => store.LoadConversationsAsync()).GetAwaiter().GetResult();
+        Check(history.Items.Single().RemoteConversationId == "backend-modular" && history.Items.Single().Messages.Last().Text == "Respuesta modular", "UI send lost persistence or remote identity after extraction.");
+        form.Close();
+    }
+
     private static void ShowHealth(Form editor)
     {
         var scroller = Descendants(editor).OfType<Panel>().Single(p => p.AutoScroll);
@@ -211,7 +256,7 @@ internal static class Verification
 
     private static void CaptureOverview(Form form, TabControl tabs, string directory, string file)
     {
-        var overview = Descendants(form).OfType<AgentsOverview>().Single();
+        var overview = Descendants(form).OfType<AgentsOverviewControl>().Single();
         var demo = new List<AgentProfile>
         {
             new() { Id = "demo1", Name = "Coordinador", AgentSystem = "Sistema de pruebas" },
@@ -265,7 +310,7 @@ internal static class Verification
             await Task.Delay(100, cancellation);
             return new HttpResponseMessage(HttpStatusCode.OK);
         }));
-        using var form = new ChatForm(store, client);
+        using var form = new MainForm(store, client);
         form.Show();
         WaitForUi(() => calls > 0);
         Check(Descendants(form).OfType<TextBox>().Single(t => t.Multiline).Enabled, "Health polling blocked the composer.");
@@ -290,7 +335,7 @@ internal static class Verification
     {
         var store = new LocalStore(Path.Combine(data, "group-ui"));
         Task.Run(() => store.SaveCatalogAsync(new AgentCatalog { Groups = ["DEFAULT", "Original"], Profiles = [new AgentProfile { Id = "kept", AgentSystem = "Original" }] })).GetAwaiter().GetResult();
-        using var form = new ChatForm(store);
+        using var form = new MainForm(store);
         form.Show();
         var manage = Descendants(form).OfType<Button>().First(b => b.Text == "Administrar grupos");
         WaitForUi(() => manage.Enabled);
@@ -337,7 +382,7 @@ internal static class Verification
             await store.SaveCatalogAsync(new AgentCatalog { Groups = ["DEFAULT", "Sistema A", "Sistema B"], Profiles = [a, sibling, b] });
             foreach (var conversation in new[] { newest, older, other, foreign }) await store.SaveConversationAsync(conversation);
         }).GetAwaiter().GetResult();
-        using var form = new ChatForm(store);
+        using var form = new MainForm(store);
         form.Show();
         var input = Descendants(form).OfType<TextBox>().Single(t => t.Multiline);
         WaitForUi(() => input.Enabled);
@@ -407,7 +452,7 @@ internal static class Verification
             Capture(form, Path.Combine(screenshots, "history-scaled.png"));
         }
         form.Close();
-        using var reopened = new ChatForm(store);
+        using var reopened = new MainForm(store);
         reopened.Show();
         WaitForUi(() => Descendants(reopened).OfType<TextBox>().Single(t => t.Multiline).Enabled);
         Check(Descendants(reopened).OfType<ListBox>().Single(l => l.Name == "AgentConversations").Items.Count == 0, "Deleted conversations reappeared after restart.");
@@ -437,7 +482,7 @@ internal static class Verification
             await store.SaveConversationAsync(history);
         }).GetAwaiter().GetResult();
         using var client = new HealthClient(new FakeBackend((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK))));
-        using var form = new ChatForm(store, client);
+        using var form = new MainForm(store, client);
         form.Show();
         var manage = Descendants(form).OfType<Button>().Single(b => b.Text == "Administrar agentes");
         var input = Descendants(form).OfType<TextBox>().Single(t => t.Multiline);
@@ -520,6 +565,8 @@ internal static class Verification
     private static async Task RunAsync(string data)
     {
         Directory.CreateDirectory(data);
+        await VerifySessionServiceAsync(data);
+        await VerifyMonitorServiceAsync();
         await VerifyHealthAsync(data);
         await VerifyGroupsAsync(data);
         var profile = new AgentProfile
@@ -680,6 +727,121 @@ internal static class Verification
         }
         profile.Endpoint = "http://localhost:8000/chat";
         await store.SaveProfilesAsync([profile]);
+    }
+
+    private static async Task VerifySessionServiceAsync(string data)
+    {
+        var profile = new AgentProfile();
+        var store = new LocalStore(Path.Combine(data, "session-service"));
+        ChatSession NewSession(string draft) => new() { Current = new Conversation { AgentProfileId = profile.Id }, Draft = draft };
+        var session = NewSession("Hola desde la sesión");
+        var localId = session.Current!.Id;
+        using (var sender = new ChatSessionService(store, new OrchestratorClient(new FakeBackend((_, _) =>
+        {
+            Check(File.Exists(Path.Combine(store.RootPath, "conversations", localId + ".json")) && session.Draft == "", "Service must persist pending history before HTTP and clear the submitted draft.");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"answer":"Respuesta","conversation_id":"remote-session"}""") });
+        }))))
+        {
+            var changes = 0;
+            sender.Changed += (_, _) => changes++;
+            var warning = await sender.SendAsync(session, profile, "");
+            Check(warning is null && !sender.IsSending && session.Current.Id == localId && session.Current.RemoteConversationId == "remote-session", "Session send changed the local identity or lost the remote one.");
+            Check(session.Draft == "" && session.Current.Messages.Last().Text == "Respuesta" && changes >= 3, "Session events or successful state synchronization failed.");
+        }
+        var failed = NewSession("Recuperar este borrador");
+        using (var sender = new ChatSessionService(store, new OrchestratorClient(new FakeBackend((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError))))))
+        {
+            await sender.SendAsync(failed, profile, "");
+            Check(failed.Draft == "Recuperar este borrador" && failed.Current!.Messages[0].DeliveryStatus == "failed", "Service did not restore the draft after HTTP failure.");
+        }
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = NewSession("Cancelar este mensaje");
+        using (var sender = new ChatSessionService(store, new OrchestratorClient(new FakeBackend(async (_, cancellation) =>
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellation);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }))))
+        {
+            var pending = sender.SendAsync(cancelled, profile, "");
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Check(sender.IsSending && sender.CanCancel, "Service did not expose sending state.");
+            try { await sender.SendAsync(cancelled, profile, ""); throw new Exception("Overlapping send accepted."); }
+            catch (InvalidOperationException) { assertions++; }
+            sender.Cancel();
+            await pending;
+            Check(cancelled.Draft == "Cancelar este mensaje" && cancelled.Current!.Messages[0].DeliveryStatus == "cancelled" && !sender.IsSending, "Service cancellation did not restore the draft and release sending state.");
+        }
+        var blockedPath = Path.Combine(data, "blocked-session-store");
+        await File.WriteAllTextAsync(blockedPath, "file blocks directory");
+        var unsaved = NewSession("No perder este texto");
+        var calls = 0;
+        using (var sender = new ChatSessionService(new LocalStore(blockedPath), new OrchestratorClient(new FakeBackend((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }))))
+        {
+            try { await sender.SendAsync(unsaved, profile, ""); throw new Exception("Sending without saving was accepted."); }
+            catch (IOException) { Check(calls == 0 && unsaved.Draft == "No perder este texto" && unsaved.Current!.Messages.Count == 0 && !sender.IsSending, "Persistence failure sent HTTP or discarded session state."); }
+        }
+        var partial = NewSession("Respuesta en memoria");
+        using (var sender = new ChatSessionService(store, new OrchestratorClient(new FakeBackend((_, _) =>
+        {
+            Directory.CreateDirectory(Path.Combine(store.RootPath, "conversations", partial.Current!.Id + ".json.tmp"));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"answer":"Conservar resultado"}""") });
+        }))))
+        {
+            profile.ResponseConversationIdPath = "";
+            var warning = await sender.SendAsync(partial, profile, "");
+            Check(warning is not null && partial.Current!.Messages.Last().Text == "Conservar resultado", "Final persistence failure lost the in-memory response or its warning.");
+        }
+    }
+
+    private static async Task VerifyMonitorServiceAsync()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var profile = new AgentProfile { Health = new HealthSettings { Endpoint = "https://example.invalid/old", IntervalSeconds = 86400 } };
+        using (var monitor = new HealthMonitorService(new HealthClient(new FakeBackend(async (_, cancellation) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) { entered.TrySetResult(); await release.Task.WaitAsync(cancellation); }
+            return new HttpResponseMessage(calls == 1 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable);
+        }))))
+        {
+            monitor.UpdateProfiles([profile], new Dictionary<string, string>());
+            var pending = monitor.RefreshAsync(true);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await monitor.RefreshAsync(true);
+            Check(calls == 1 && monitor.IsRefreshing, "Monitoring rounds overlapped.");
+            var replacement = new AgentProfile { Id = profile.Id, Health = new HealthSettings { Endpoint = "https://example.invalid/new", IntervalSeconds = 86400 } };
+            monitor.UpdateProfiles([replacement], new Dictionary<string, string>());
+            release.TrySetResult();
+            await pending;
+            Check(!monitor.Results.ContainsKey(profile.Id), "A replaced profile received a stale health result.");
+            await monitor.RefreshAsync(true);
+            Check(monitor.Results[profile.Id].State == "No saludable" && !monitor.IsRefreshing, "Monitor did not publish the replacement profile result.");
+            await monitor.RefreshAsync();
+            Check(calls == 2, "Monitor ignored the configured interval.");
+            monitor.UpdateProfiles([], new Dictionary<string, string>());
+            Check(monitor.Results.Count == 0, "Monitor retained a removed profile result.");
+        }
+        var automatic = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var periodic = new HealthMonitorService(new HealthClient(new FakeBackend(async (_, cancellation) =>
+        {
+            using var registration = cancellation.Register(() => stopped.TrySetResult());
+            automatic.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellation);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        })));
+        periodic.UpdateProfiles([profile], new Dictionary<string, string>());
+        periodic.Start();
+        await automatic.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        periodic.Dispose();
+        await stopped.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Check(stopped.Task.IsCompleted, "Stopping the independent monitor did not cancel an active request.");
     }
 
     private static async Task VerifyGroupsAsync(string data)

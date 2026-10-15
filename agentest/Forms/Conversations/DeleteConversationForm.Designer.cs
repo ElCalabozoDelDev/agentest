@@ -1,11 +1,9 @@
 using agentest.Forms.Theming;
-using agentest.Models;
-
-namespace agentest.Forms;
-
-public sealed class DeleteConversationForm : Form
+namespace agentest.Forms.Conversations;
+public sealed partial class DeleteConversationForm
 {
-    public DeleteConversationForm(Conversation conversation, bool hasDraft, ThemePalette palette)
+    private Label message = null!;
+    private void InitializeComponent()
     {
         Text = "Eliminar conversación";
         Font = new Font("Segoe UI", 10);
@@ -17,7 +15,8 @@ public sealed class DeleteConversationForm : Form
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        root.Controls.Add(new Label { Dock = DockStyle.Fill, Text = $"¿Eliminar «{conversation.Title}» del historial local?\n\nEsta acción no elimina la conversación del servidor." + (hasDraft ? "\nTambién se descartará el borrador actual." : "") }, 0, 0);
+        message = new Label { Dock = DockStyle.Fill };
+        root.Controls.Add(message, 0, 0);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         var cancel = new ThemeButton { Text = "Cancelar", AutoSize = true, DialogResult = DialogResult.Cancel };
         var delete = new ThemeButton { Text = "Eliminar", AutoSize = true, DialogResult = DialogResult.OK };
@@ -26,6 +25,5 @@ public sealed class DeleteConversationForm : Form
         Controls.Add(root);
         CancelButton = cancel;
         AcceptButton = cancel;
-        ThemeAppearance.Apply(this, palette);
     }
 }

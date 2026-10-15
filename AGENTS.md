@@ -8,6 +8,7 @@ Agentest es un frontend de escritorio WinForms para consultar agentes de IA medi
 - Solución: `agentest.slnx`.
 - Proyecto ejecutable: `agentest/agentest.csproj`.
 - Inicio: `agentest/Program.cs`.
+- Ventana principal: `agentest/Forms/Main/MainForm.cs`.
 - Referencia de uso y contratos: `README.md`.
 
 ## Arquitectura y organización
@@ -18,6 +19,7 @@ Mantener un único proyecto, una sola capa y una unidad de despliegue. Separar r
 | --- | --- |
 | `agentest/Models` | Perfiles, configuración, conversaciones, mensajes y metadatos de adjuntos. |
 | `agentest/Forms` | Interfaz WinForms y coordinación de acciones del usuario. |
+| `agentest/Controls` | Vistas y controles WinForms compuestos, separados por funcionalidad, sin acceso a archivos ni clientes HTTP. |
 | `agentest/Forms/Theming` | Paletas y aplicación de la apariencia a los controles. |
 | `agentest/Services` | Construcción del JSON, cliente HTTP y preparación de adjuntos. |
 | `agentest/Persistence` | Lectura y escritura de configuración e historial local. |
@@ -25,6 +27,8 @@ Mantener un único proyecto, una sola capa y una unidad de despliegue. Separar r
 | `docs/bitacora` | Registro de cambios relevantes y sus validaciones. |
 
 La lógica HTTP, la transformación de contratos y el acceso a archivos deben permanecer fuera de los eventos visuales. Usar operaciones asíncronas para mantener disponible la interfaz. Respetar los cambios existentes del usuario.
+
+Organizar los formularios en `Forms/Main`, `Forms/Agents`, `Forms/Groups` y `Forms/Conversations`; la coordinación del chat está en `Forms/Chat`. Los controles se agrupan en `Controls/Chat`, `Controls/Conversations` y `Controls/Agents`. Separar disposición visual en `.Designer.cs`, comportamiento en `.cs` y recursos en `.resx`. Los controles con dibujo propio pueden definir su representación directamente. Mantener los constructores de vistas libres de acceso a datos y llamadas HTTP; la inicialización de ejecución comienza al mostrar la ventana principal. Consultar `docs/arquitectura.md` para las responsabilidades y el ciclo de vida.
 
 ## Forma de trabajo
 
