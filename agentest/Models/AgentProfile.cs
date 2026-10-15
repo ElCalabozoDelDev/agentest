@@ -4,6 +4,8 @@ public sealed class AgentProfile
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Orquestador (ejemplo)";
+    public string AgentSystem { get; set; } = "DEFAULT";
+    public HealthSettings Health { get; set; } = new();
     public string Endpoint { get; set; } = "http://localhost:8000/chat";
     public string Method { get; set; } = "POST";
     public string AuthenticationHeader { get; set; } = "Authorization";

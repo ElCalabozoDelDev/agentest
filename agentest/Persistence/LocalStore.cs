@@ -1,5 +1,6 @@
 using System.Text.Json;
 using agentest.Models;
+using agentest.Services;
 
 namespace agentest.Persistence;
 
@@ -31,15 +32,37 @@ public sealed class LocalStore
         return WriteAsync(SettingsPath, settings);
     }
 
-    public async Task<List<AgentProfile>> LoadProfilesAsync()
+    public async Task<AgentCatalog> LoadCatalogAsync()
     {
         Directory.CreateDirectory(ConversationsPath);
-        if (!File.Exists(ProfilesPath)) return [new AgentProfile()];
-        return JsonSerializer.Deserialize<List<AgentProfile>>(await File.ReadAllTextAsync(ProfilesPath), Options)
-            ?? throw new InvalidDataException("El archivo de perfiles no contiene una lista válida.");
+        if (!File.Exists(ProfilesPath)) return new AgentCatalog { Profiles = [new AgentProfile()] };
+        var source = await File.ReadAllTextAsync(ProfilesPath);
+        using var json = JsonDocument.Parse(source);
+        var catalog = json.RootElement.ValueKind == JsonValueKind.Array
+            ? new AgentCatalog { Profiles = JsonSerializer.Deserialize<List<AgentProfile>>(source, Options)! }
+            : JsonSerializer.Deserialize<AgentCatalog>(source, Options);
+        if (catalog is null || (json.RootElement.ValueKind == JsonValueKind.Object &&
+            (!json.RootElement.TryGetProperty("Groups", out _) || !json.RootElement.TryGetProperty("Profiles", out _))))
+            throw new InvalidDataException("El archivo de perfiles no contiene un catálogo válido.");
+        AgentGroups.Normalize(catalog);
+        return catalog;
     }
 
-    public Task SaveProfilesAsync(List<AgentProfile> profiles) => WriteAsync(ProfilesPath, profiles);
+    public async Task<List<AgentProfile>> LoadProfilesAsync() => (await LoadCatalogAsync()).Profiles;
+
+    public async Task SaveProfilesAsync(List<AgentProfile> profiles)
+    {
+        var catalog = await LoadCatalogAsync();
+        catalog.Profiles = profiles;
+        await SaveCatalogAsync(catalog);
+    }
+
+    public Task SaveCatalogAsync(AgentCatalog catalog)
+    {
+        var normalized = AgentGroups.Copy(catalog);
+        AgentGroups.Normalize(normalized);
+        return WriteAsync(ProfilesPath, normalized);
+    }
 
     public async Task<(List<Conversation> Items, List<string> Errors)> LoadConversationsAsync()
     {

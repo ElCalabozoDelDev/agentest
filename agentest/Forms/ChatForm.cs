@@ -12,7 +12,17 @@ public sealed class ChatForm : Form
     private readonly LocalStore store;
     private readonly OrchestratorClient client = new();
     private readonly Dictionary<string, string> credentials = [];
+    private readonly Dictionary<string, string> healthCredentials = [];
+    private readonly HealthClient healthClient;
+    private readonly Dictionary<string, AgentHealth> healthResults = [];
+    private readonly CancellationTokenSource monitoring = new();
+    private readonly System.Windows.Forms.Timer healthTimer = new() { Interval = 1000 };
+    private readonly AgentsOverview agentsOverview = new();
+    private bool checkingHealth;
+    private bool resourcesDisposed;
     private List<AgentProfile> profiles = [];
+    private List<string> agentGroups = ["DEFAULT"];
+    private readonly Button manageGroups = MakeButton("Administrar grupos");
     private List<Conversation> conversations = [];
     private readonly List<ChatAttachment> pendingAttachments = [];
     private Conversation? current;
@@ -26,22 +36,28 @@ public sealed class ChatForm : Form
     private ThemePalette palette = ThemePalette.Light;
     private readonly Button themeButton = MakeButton("Tema: Sistema ▾");
     private readonly ContextMenuStrip themeMenu = new();
+    private readonly ContextMenuStrip agentsMenu = new();
+    private readonly Button manageAgents = MakeButton("Administrar agentes");
+    private readonly ToolStripMenuItem newProfile = new("Nuevo agente"), editProfile = new("Editar agente"), deleteProfile = new("Eliminar agente");
+    private readonly ComboBox systemList = new() { Name = "ChatSystem", AccessibleName = "Sistema", DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left | AnchorStyles.Right };
+    private string activeSystem = "DEFAULT";
     private TableLayoutPanel chatLayout = null!;
     private readonly ListBox conversationList = new() { Dock = DockStyle.Fill, IntegralHeight = false, BorderStyle = BorderStyle.None };
-    private readonly ComboBox profileList = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250 };
+    private readonly ComboBox profileList = new() { Name = "ChatAgent", AccessibleName = "Agente", DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left | AnchorStyles.Right };
     private readonly RichTextBox transcript = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.White, BorderStyle = BorderStyle.None, DetectUrls = false };
     private readonly TextBox input = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical };
     private readonly Label status = new() { Dock = DockStyle.Fill, Text = "Cargando…", AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Label capabilities = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly ListBox attachmentList = new() { Dock = DockStyle.Fill, IntegralHeight = false, DisplayMember = nameof(ChatAttachment.Name) };
     private readonly Button send = MakeButton("Enviar (Ctrl+Enter)"), cancel = MakeButton("Cancelar"), attach = MakeButton("Adjuntar"), removeAttachment = MakeButton("Quitar adjunto");
-    private readonly Button newChat = MakeButton("Nueva conversación"), newProfile = MakeButton("Nuevo perfil"), editProfile = MakeButton("Editar perfil"), deleteProfile = MakeButton("Eliminar perfil");
+    private readonly Button newChat = MakeButton("Nueva conversación");
     private AgentProfile? SelectedProfile => profileList.SelectedItem as AgentProfile;
     private bool Busy => sending is not null || readingAttachments || savingProfile || savingTheme;
 
-    public ChatForm(LocalStore? localStore = null)
+    public ChatForm(LocalStore? localStore = null, HealthClient? healthMonitor = null)
     {
         store = localStore ?? new LocalStore();
+        healthClient = healthMonitor ?? new HealthClient();
         Text = "Agentest · Chat con agentes";
         Size = new Size(1180, 820);
         MinimumSize = new Size(960, 700);
@@ -49,7 +65,14 @@ public sealed class ChatForm : Form
         Font = new Font("Segoe UI", 10);
         BackColor = Color.FromArgb(243, 246, 250);
         BuildLayout();
+        healthTimer.Tick += async (_, _) => await RefreshHealthAsync();
+        agentsOverview.RefreshRequested += async (_, _) => await RefreshHealthAsync(force: true);
+        agentsOverview.ManageGroupsRequested += async (_, _) => await ManageGroupsAsync();
+        manageGroups.Click += async (_, _) => await ManageGroupsAsync();
         BuildThemeMenu();
+        agentsMenu.Items.AddRange([newProfile, editProfile, deleteProfile]);
+        manageAgents.ContextMenuStrip = agentsMenu;
+        manageAgents.Click += (_, _) => agentsMenu.Show(manageAgents, new Point(0, manageAgents.Height));
         ApplyTheme();
         SystemEvents.UserPreferenceChanged += SystemPreferenceChanged;
         Shown += async (_, _) => await InitializeAsync();
@@ -93,6 +116,28 @@ public sealed class ChatForm : Form
             }
             UpdateControls();
         };
+        systemList.SelectedIndexChanged += (_, _) =>
+        {
+            if (refreshing) return;
+            var system = systemList.SelectedItem as string;
+            if (system is null) return;
+            if (!ready || Busy || current?.Messages.Count > 0)
+            {
+                RefreshProfiles(current?.AgentProfileId, activeSystem);
+                return;
+            }
+            if (pendingAttachments.Count > 0 && MessageBox.Show(this,
+                    "Cambiar de sistema quitará los adjuntos del borrador. ¿Continuar?", "Cambiar sistema",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                RefreshProfiles(current?.AgentProfileId, activeSystem);
+                return;
+            }
+            RefreshProfiles(profiles.FirstOrDefault(p => string.Equals(p.AgentSystem, system, StringComparison.OrdinalIgnoreCase))?.Id, system);
+            if (current is not null) current.AgentProfileId = SelectedProfile?.Id ?? "";
+            pendingAttachments.Clear();
+            RefreshAttachments();
+        };
         conversationList.SelectedIndexChanged += (_, _) =>
         {
             if (refreshing || Busy || conversationList.SelectedItem is not Conversation conversation) return;
@@ -125,6 +170,7 @@ public sealed class ChatForm : Form
     private void BuildLayout()
     {
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 2, RowCount = 1 };
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(0, 0, 12, 0) };
@@ -150,6 +196,7 @@ public sealed class ChatForm : Form
         sidebar.Controls.Add(openFolder, 0, 3);
         root.Controls.Add(sidebar, 0, 0);
         var chat = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8 };
+        chat.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         chatLayout = chat;
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         chat.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -159,22 +206,26 @@ public sealed class ChatForm : Form
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        var profileBar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        profileBar.Controls.Add(new Label { Text = "Agente", AutoSize = true, Margin = new Padding(0, 8, 12, 0) });
-        profileList.Margin = new Padding(0, 4, 0, 0);
-        profileBar.Controls.Add(profileList);
-        themeButton.Margin = new Padding(12, 0, 0, 0);
-        profileBar.Controls.Add(themeButton);
+        var profileBar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1 };
+        profileBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        profileBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        profileBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        profileBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        profileBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        profileBar.Controls.Add(new Label { Text = "Sistema", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 8, 0) }, 0, 0);
+        profileBar.Controls.Add(systemList, 1, 0);
+        profileBar.Controls.Add(new Label { Text = "Agente", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(12, 0, 8, 0) }, 2, 0);
+        profileBar.Controls.Add(profileList, 3, 0);
         chat.Controls.Add(profileBar, 0, 0);
         var profileButtons = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
+            WrapContents = true,
             Margin = new Padding(0, 0, 0, 6)
         };
-        profileButtons.Controls.AddRange([newProfile, editProfile, deleteProfile]);
+        profileButtons.Controls.AddRange([manageAgents, manageGroups, themeButton]);
         chat.Controls.Add(profileButtons, 0, 1);
         chat.Controls.Add(capabilities, 0, 2);
         transcript.Font = new Font("Segoe UI", 11);
@@ -182,6 +233,7 @@ public sealed class ChatForm : Form
         chat.Controls.Add(attachmentList, 0, 4);
         input.PlaceholderText = "Escribe un mensaje. Ctrl+Enter para enviar.";
         var composer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        composer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         composer.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
         composer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         composer.Controls.Add(new Label { Text = "Mensaje · Enter agrega una línea", Dock = DockStyle.Fill }, 0, 0);
@@ -192,7 +244,13 @@ public sealed class ChatForm : Form
         chat.Controls.Add(actions, 0, 6);
         chat.Controls.Add(status, 0, 7);
         root.Controls.Add(chat, 1, 0);
-        Controls.Add(root);
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var chatTab = new TabPage("Chat") { UseVisualStyleBackColor = false };
+        var agentsTab = new TabPage("Agentes") { UseVisualStyleBackColor = false };
+        chatTab.Controls.Add(root);
+        agentsTab.Controls.Add(agentsOverview);
+        tabs.TabPages.AddRange([chatTab, agentsTab]);
+        Controls.Add(tabs);
     }
 
     private async Task InitializeAsync()
@@ -205,8 +263,10 @@ public sealed class ChatForm : Form
                 ShowError("No se pudo cargar la apariencia guardada. Se usará el tema del sistema.\n" + ex.Message);
             }
             ApplyTheme();
-            profiles = await store.LoadProfilesAsync();
-            await store.SaveProfilesAsync(profiles);
+            var catalog = await store.LoadCatalogAsync();
+            profiles = catalog.Profiles;
+            agentGroups = catalog.Groups;
+            await store.SaveCatalogAsync(catalog);
             var loaded = await store.LoadConversationsAsync();
             conversations = loaded.Items;
             // Interrupted requests must not appear delivered after restarting the application.
@@ -218,6 +278,8 @@ public sealed class ChatForm : Form
             }
             RefreshProfiles(profiles.FirstOrDefault()?.Id);
             ready = true;
+            agentsOverview.Render(profiles, healthResults, agentGroups);
+            healthTimer.Start();
             StartConversation();
             status.Text = "Listo. Configura el perfil para conectar con tu orquestador.";
             if (loaded.Errors.Count > 0) ShowError("Algunos historiales no pudieron abrirse y se conservaron en disco:\n" + string.Join("\n", loaded.Errors));
@@ -269,6 +331,8 @@ public sealed class ChatForm : Form
         foreach (Form form in Application.OpenForms) ThemeAppearance.Apply(form, palette);
         ThemeAppearance.Apply(this, palette);
         ThemeAppearance.Apply(themeMenu, palette);
+        ThemeAppearance.Apply(agentsMenu, palette);
+        agentsOverview.SetPalette(palette);
         themeButton.Text = settings.Theme switch
         {
             ThemeMode.Light => "Tema: Claro ▾",
@@ -320,13 +384,21 @@ public sealed class ChatForm : Form
         UpdateControls();
     }
 
-    private void RefreshProfiles(string? selectedId)
+    private void RefreshProfiles(string? selectedId, string? system = null)
     {
+        var selected = profiles.FirstOrDefault(p => p.Id == selectedId);
+        var desired = selected?.AgentSystem ?? system ?? activeSystem;
+        activeSystem = agentGroups.FirstOrDefault(g => string.Equals(g, desired, StringComparison.OrdinalIgnoreCase)) ?? "DEFAULT";
         refreshing = true;
+        systemList.Items.Clear();
+        systemList.Items.AddRange(agentGroups.OrderBy(g => g).Cast<object>().ToArray());
+        systemList.SelectedItem = activeSystem;
         profileList.Items.Clear();
-        profileList.Items.AddRange(profiles.Cast<object>().ToArray());
-        profileList.SelectedItem = profiles.FirstOrDefault(p => p.Id == selectedId);
+        profileList.Items.AddRange(profiles.Where(p => string.Equals(p.AgentSystem, activeSystem, StringComparison.OrdinalIgnoreCase)).Cast<object>().ToArray());
+        profileList.SelectedItem = selected;
         refreshing = false;
+        foreach (var id in healthResults.Keys.Where(id => profiles.All(p => p.Id != id)).ToList()) healthResults.Remove(id);
+        agentsOverview.Render(profiles, healthResults, agentGroups);
         UpdateControls();
     }
 
@@ -348,13 +420,19 @@ public sealed class ChatForm : Form
 
     private void UpdateControls()
     {
+        agentsOverview.SetRefreshing(checkingHealth, ready);
+        manageGroups.Enabled = ready && !Busy;
+        agentsOverview.SetManagementEnabled(ready && !Busy);
         var profile = SelectedProfile;
         themeButton.Enabled = ready && !savingTheme;
         newChat.Enabled = ready && !Busy;
+        manageAgents.Enabled = ready && !Busy;
         newProfile.Enabled = ready && !Busy;
         editProfile.Enabled = ready && !Busy && profile is not null;
         deleteProfile.Enabled = editProfile.Enabled;
         profileList.Enabled = ready && !Busy && (current is null || current.Messages.Count == 0);
+        systemList.Enabled = profileList.Enabled;
+        profileList.Enabled &= profileList.Items.Count > 0;
         conversationList.Enabled = ready && !Busy;
         input.Enabled = ready && !Busy;
         send.Enabled = ready && !Busy && profile is not null && HasDraft();
@@ -362,7 +440,7 @@ public sealed class ChatForm : Form
         attach.Enabled = ready && !Busy && profile?.AcceptsAttachments == true;
         removeAttachment.Enabled = ready && !Busy && attachmentList.SelectedIndex >= 0;
         chatLayout.RowStyles[4].Height = pendingAttachments.Count > 0 ? 76 : 0;
-        capabilities.Text = profile is null ? "Selecciona o crea un perfil de agente." : profile.AcceptsAttachments
+        capabilities.Text = profile is null ? "Selecciona un agente o usa Administrar agentes para crear uno en este sistema." : profile.AcceptsAttachments
             ? $"Adjuntos: {profile.AllowedExtensions} · hasta {profile.MaxAttachmentMegabytes} MB por archivo"
             : "Este agente admite mensajes de texto.";
     }
@@ -372,7 +450,7 @@ public sealed class ChatForm : Form
         transcript.Clear();
         if (current is null || current.Messages.Count == 0)
         {
-            transcript.Text = "Inicia una conversación\n\nSelecciona un perfil y configura el endpoint y el contrato JSON de tu orquestador.\n\nLos mensajes enviados y las respuestas se guardan en la carpeta local de Agentest.";
+            transcript.Text = "Inicia una conversación\n\nSelecciona un sistema y un agente. Usa Administrar agentes para configurar la conexión de tu orquestador.\n\nLos mensajes enviados y las respuestas se guardan en la carpeta local de Agentest.";
             return;
         }
         foreach (var message in current.Messages)
@@ -395,9 +473,9 @@ public sealed class ChatForm : Form
 
     private async Task EditProfileAsync(bool create)
     {
-        var profile = create ? new AgentProfile { Name = "Nuevo agente" } : SelectedProfile;
+        var profile = create ? new AgentProfile { Name = "Nuevo agente", AgentSystem = activeSystem } : SelectedProfile;
         if (profile is null) return;
-        using var editor = new ProfileEditorForm(profile, credentials.GetValueOrDefault(profile.Id, ""), palette);
+        using var editor = new ProfileEditorForm(profile, credentials.GetValueOrDefault(profile.Id, ""), palette, healthCredentials.GetValueOrDefault(profile.Id, ""), agentGroups);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         if (pendingAttachments.Count > 0 && MessageBox.Show(this,
                 "Guardar este perfil quitará los adjuntos del borrador. ¿Continuar?", "Actualizar perfil",
@@ -410,6 +488,8 @@ public sealed class ChatForm : Form
             await store.SaveProfilesAsync(updated);
             profiles = updated;
             credentials[editor.Profile.Id] = editor.SessionToken;
+            healthCredentials[editor.Profile.Id] = editor.HealthSessionToken;
+            healthResults.Remove(editor.Profile.Id);
             var selectedId = current?.Messages.Count > 0 ? current.AgentProfileId : editor.Profile.Id;
             RefreshProfiles(selectedId);
             if (current is not null && current.Messages.Count == 0) current.AgentProfileId = selectedId;
@@ -441,6 +521,7 @@ public sealed class ChatForm : Form
             await store.SaveProfilesAsync(updated);
             profiles = updated;
             credentials.Remove(profile.Id);
+            healthCredentials.Remove(profile.Id);
             RefreshProfiles(profiles.FirstOrDefault()?.Id);
             input.Clear();
             pendingAttachments.Clear();
@@ -451,6 +532,26 @@ public sealed class ChatForm : Form
             status.Text = "Perfil eliminado.";
         }
         catch (Exception ex) { ShowError(ex.Message); }
+        finally { savingProfile = false; UpdateControls(); }
+    }
+
+    private async Task ManageGroupsAsync()
+    {
+        if (!ready || Busy) return;
+        using var editor = new GroupManagerForm(new AgentCatalog { Groups = agentGroups, Profiles = profiles }, palette);
+        if (editor.ShowDialog(this) != DialogResult.OK) return;
+        savingProfile = true;
+        UpdateControls();
+        try
+        {
+            await store.SaveCatalogAsync(editor.Catalog);
+            var selectedId = SelectedProfile?.Id;
+            agentGroups = editor.Catalog.Groups;
+            profiles = editor.Catalog.Profiles;
+            RefreshProfiles(selectedId);
+            status.Text = "Grupos guardados. Los agentes conservan sus conversaciones y configuración.";
+        }
+        catch (Exception ex) { ShowError("No se pudieron guardar los grupos: " + ex.Message); }
         finally { savingProfile = false; UpdateControls(); }
     }
 
@@ -561,12 +662,47 @@ public sealed class ChatForm : Form
 
     private void ShowError(string text) => MessageBox.Show(this, text, "Agentest", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
+    private async Task RefreshHealthAsync(bool force = false)
+    {
+        if (!ready || checkingHealth || monitoring.IsCancellationRequested) return;
+        var due = profiles.Where(p => !string.IsNullOrWhiteSpace(p.Health.Endpoint) &&
+            (force || !healthResults.TryGetValue(p.Id, out var result) ||
+             (DateTimeOffset.Now - result.CheckedAt).TotalSeconds >= p.Health.IntervalSeconds)).ToList();
+        if (due.Count == 0) return;
+        checkingHealth = true;
+        agentsOverview.SetRefreshing(true, ready);
+        try
+        {
+            await Task.WhenAll(due.Select(async profile =>
+            {
+                var result = await healthClient.CheckAsync(profile.Health, healthCredentials.GetValueOrDefault(profile.Id, ""), monitoring.Token);
+                // Ignore results for profiles replaced or removed during an in-flight check.
+                if (!monitoring.IsCancellationRequested && profiles.Any(p => ReferenceEquals(p, profile)))
+                    healthResults[profile.Id] = result;
+            }));
+            if (!monitoring.IsCancellationRequested) agentsOverview.Render(profiles, healthResults, agentGroups);
+        }
+        catch (OperationCanceledException) when (monitoring.IsCancellationRequested) { }
+        finally
+        {
+            checkingHealth = false;
+            if (!IsDisposed && !Disposing) agentsOverview.SetRefreshing(false, ready);
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !resourcesDisposed)
         {
+            resourcesDisposed = true;
             SystemEvents.UserPreferenceChanged -= SystemPreferenceChanged;
+            healthTimer.Stop();
+            healthTimer.Dispose();
+            monitoring.Cancel();
+            healthClient.Dispose();
+            monitoring.Dispose();
             themeMenu.Dispose();
+            agentsMenu.Dispose();
             sending?.Dispose();
             client.Dispose();
         }

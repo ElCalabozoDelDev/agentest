@@ -11,6 +11,10 @@ public sealed class ThemeButton : Button
         if (Enabled)
         {
             base.OnPaint(e);
+            // Redraw with the palette color: native theme transitions can retain a stale text color.
+            var textBounds = Rectangle.FromLTRB(Padding.Left, Padding.Top, Width - Padding.Right, Height - Padding.Bottom);
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, ForeColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
             return;
         }
         // Native disabled text can have insufficient contrast on a custom dark background.

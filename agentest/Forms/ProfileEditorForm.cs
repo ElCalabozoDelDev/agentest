@@ -16,23 +16,27 @@ public sealed class ProfileEditorForm : Form
     private readonly TextBox template = new() { Multiline = true, AcceptsReturn = true, AcceptsTab = true, ScrollBars = ScrollBars.Both, WordWrap = false, Font = new Font("Consolas", 10) };
     public AgentProfile Profile { get; private set; }
     public string SessionToken => token.Text;
+    private readonly ComboBox agentSystem = new() { DropDownStyle = ComboBoxStyle.DropDownList, Name = "AgentGroup" };
+    private readonly TextBox healthEndpoint = new() { Name = "HealthEndpoint" }, healthPath = new() { Name = "HealthPath" }, healthValue = new() { Name = "HealthValue" }, healthHeader = new(), healthPrefix = new(), healthToken = new();
+    private readonly ComboBox healthMethod = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly NumericUpDown healthInterval = new() { Minimum = 1, Maximum = 86400 }, healthTimeout = new() { Minimum = 1, Maximum = 300 }, healthStatus = new() { Minimum = 100, Maximum = 599 };
+    public string HealthSessionToken => healthToken.Text;
 
-    public ProfileEditorForm(AgentProfile profile, string sessionToken, ThemePalette? palette = null)
+    public ProfileEditorForm(AgentProfile profile, string sessionToken, ThemePalette? palette = null, string healthSessionToken = "", IReadOnlyList<string>? groups = null)
     {
         original = profile;
         Profile = profile;
         Text = "Perfil de agente";
         Font = new Font("Segoe UI", 10);
         StartPosition = FormStartPosition.CenterParent;
-        Size = new Size(850, 870);
+        Size = new Size(850, 790);
         MinimumSize = new Size(700, 680);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 2, RowCount = 15 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 2, RowCount = 14 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 12; row++) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 35));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
         AddRow(layout, 0, "Nombre", name);
         AddRow(layout, 1, "Endpoint", endpoint);
         method.Items.AddRange(["POST", "PUT", "PATCH"]);
@@ -65,9 +69,53 @@ public sealed class ProfileEditorForm : Form
         var cancel = new ThemeButton { Text = "Cancelar", AutoSize = true, DialogResult = DialogResult.Cancel };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        layout.Controls.Add(buttons, 0, 14);
-        layout.SetColumnSpan(buttons, 2);
-        Controls.Add(layout);
+        var content = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        var sections = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 3 };
+        sections.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.Dock = DockStyle.Top;
+        layout.AutoSize = true;
+        var healthLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(16), ColumnCount = 2, RowCount = 12 };
+        healthLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        healthLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var row = 0; row < 11; row++) healthLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        healthLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        var identity = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(16, 16, 16, 0), ColumnCount = 2, RowCount = 2 };
+        identity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
+        identity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        identity.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        identity.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        AddRow(identity, 0, "Grupo / sistema agéntico", agentSystem);
+        var chatTitle = new Label { Dock = DockStyle.Fill, Text = "CHAT · Conexión y contrato", TextAlign = ContentAlignment.MiddleLeft };
+        identity.Controls.Add(chatTitle, 0, 1);
+        identity.SetColumnSpan(chatTitle, 2);
+        var healthTitle = new Label { Dock = DockStyle.Fill, Text = "HEALTH · Monitoreo de disponibilidad", TextAlign = ContentAlignment.MiddleLeft };
+        healthLayout.Controls.Add(healthTitle, 0, 0);
+        healthLayout.SetColumnSpan(healthTitle, 2);
+        AddRow(healthLayout, 1, "Endpoint de health", healthEndpoint);
+        healthMethod.Items.AddRange(["GET", "HEAD", "POST"]);
+        AddRow(healthLayout, 2, "Método (sin cuerpo)", healthMethod);
+        AddRow(healthLayout, 3, "Intervalo (seg.)", healthInterval);
+        AddRow(healthLayout, 4, "Timeout (seg.)", healthTimeout);
+        AddRow(healthLayout, 5, "Código HTTP esperado", healthStatus);
+        AddRow(healthLayout, 6, "Ruta JSON (opcional)", healthPath);
+        AddRow(healthLayout, 7, "Valor esperado", healthValue);
+        AddRow(healthLayout, 8, "Encabezado de acceso", healthHeader);
+        AddRow(healthLayout, 9, "Prefijo de acceso", healthPrefix);
+        healthToken.UseSystemPasswordChar = true;
+        AddRow(healthLayout, 10, "Credencial (solo sesión)", healthToken);
+        var healthHelp = new Label { Dock = DockStyle.Fill, Text = "Sin sistema se usa DEFAULT. Health es obligatorio al guardar el perfil.\nLa ruta JSON admite puntos e índices (p. ej. checks.0.status); el valor se compara exactamente, distinguiendo mayúsculas. Sin ruta se valida solo HTTP.\nLa autenticación de health es independiente del chat. No ingreses secretos en la URL. El monitoreo continúa desde ambas pestañas." };
+        healthLayout.Controls.Add(healthHelp, 0, 11);
+        healthLayout.SetColumnSpan(healthHelp, 2);
+        sections.Controls.Add(identity, 0, 0);
+        sections.Controls.Add(layout, 0, 1);
+        sections.Controls.Add(healthLayout, 0, 2);
+        content.Controls.Add(sections);
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.Controls.Add(content, 0, 0);
+        root.Controls.Add(buttons, 0, 1);
+        Controls.Add(root);
         CancelButton = cancel;
         name.Text = profile.Name;
         endpoint.Text = profile.Endpoint;
@@ -83,6 +131,19 @@ public sealed class ProfileEditorForm : Form
         conversationPath.Text = profile.ResponseConversationIdPath;
         backendCreatesConversation.Checked = profile.BackendCreatesConversation;
         template.Text = profile.RequestTemplate.ReplaceLineEndings(Environment.NewLine);
+        agentSystem.Items.AddRange((groups ?? new[] { "DEFAULT", profile.AgentSystem }).Distinct(StringComparer.OrdinalIgnoreCase).Cast<object>().ToArray());
+        agentSystem.SelectedItem = agentSystem.Items.Cast<string>().FirstOrDefault(g => string.Equals(g, profile.AgentSystem, StringComparison.OrdinalIgnoreCase)) ?? "DEFAULT";
+        var health = profile.Health;
+        healthEndpoint.Text = health.Endpoint;
+        healthMethod.SelectedItem = health.Method;
+        healthInterval.Value = Math.Clamp(health.IntervalSeconds, 1, 86400);
+        healthTimeout.Value = Math.Clamp(health.TimeoutSeconds, 1, 300);
+        healthStatus.Value = Math.Clamp(health.ExpectedStatusCode, 100, 599);
+        healthPath.Text = health.ResponseValuePath;
+        healthValue.Text = health.ExpectedValue;
+        healthHeader.Text = health.AuthenticationHeader;
+        healthPrefix.Text = health.AuthenticationPrefix;
+        healthToken.Text = healthSessionToken;
         save.Click += (_, _) => Save();
         ThemeAppearance.Apply(this, palette ?? ThemePalette.Light);
     }
@@ -105,11 +166,21 @@ public sealed class ProfileEditorForm : Form
             MaxAttachmentMegabytes = (int)maximum.Value, ResponseTextPath = responsePath.Text.Trim(),
             ResponseConversationIdPath = conversationPath.Text.Trim(),
             BackendCreatesConversation = backendCreatesConversation.Checked,
-            RequestTemplate = template.Text
+            RequestTemplate = template.Text,
+            AgentSystem = agentSystem.SelectedItem?.ToString() ?? "DEFAULT",
+            Health = new HealthSettings
+            {
+                Endpoint = healthEndpoint.Text.Trim(), Method = healthMethod.SelectedItem?.ToString() ?? "",
+                IntervalSeconds = (int)healthInterval.Value, TimeoutSeconds = (int)healthTimeout.Value,
+                ExpectedStatusCode = (int)healthStatus.Value, ResponseValuePath = healthPath.Text.Trim(),
+                ExpectedValue = healthValue.Text, AuthenticationHeader = healthHeader.Text.Trim(),
+                AuthenticationPrefix = healthPrefix.Text.Trim()
+            }
         };
         try
         {
             OrchestratorClient.ValidateProfile(candidate);
+            HealthClient.Validate(candidate.Health);
             Profile = candidate;
             DialogResult = DialogResult.OK;
         }

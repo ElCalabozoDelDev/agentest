@@ -84,13 +84,40 @@ Activa la capacidad en el perfil, indica extensiones separadas por comas (`.txt,
 
 Los archivos se envían como Base64 dentro del JSON: no se extrae texto de PDF. El límite por archivo es configurable de 1 a 100 MB; cada mensaje admite hasta 20 archivos y 100 MB en total, antes de codificar. Se guardan solo los metadatos de los adjuntos en el historial local; su contenido debe adjuntarse de nuevo después de reiniciar.
 
-## Conversaciones y almacenamiento
+## Sistemas agénticos y monitoreo
+
+La ventana tiene dos pestañas: **Chat** conserva las conversaciones y su borrador; **Agentes** ofrece una panorámica de todos los perfiles, agrupados en sistemas agénticos. Cada agente pertenece a un único sistema. Los perfiles anteriores o con sistema vacío se asignan a **DEFAULT** sin cambiar sus identificadores ni historiales.
+
+Usa **Administrar grupos**, disponible en Chat y Agentes, para crear, renombrar o eliminar sistemas agénticos. Los grupos vacíos se conservan y aparecen en la panorámica. Los nombres se comparan sin distinguir mayúsculas. Renombrar un grupo actualiza la asignación de todos sus agentes; eliminarlo solicita confirmación y los traslada a **DEFAULT** al guardar. DEFAULT no se puede renombrar ni eliminar. Los cambios se aplican mediante **Guardar cambios**; **Cancelar** conserva el catálogo anterior.
+
+En Chat, el selector **Sistema** filtra los agentes disponibles en el selector **Agente**. Un sistema vacío deja la lista de agentes sin selección e impide enviar mensajes. **Administrar agentes** reúne las acciones **Nuevo agente**, **Editar agente** y **Eliminar agente** en un menú; las dos últimas requieren un agente seleccionado. Los nuevos agentes toman inicialmente el sistema seleccionado.
+
+Desde ese menú abre el editor y selecciona un grupo del mantenedor. El editor tiene una única vista desplazable con las secciones **Chat** y **Health**, sin pestañas internas. Configura allí el endpoint de health (obligatorio al guardar) junto con las opciones del chat. Los perfiles anteriores siguen disponibles para conversar aunque todavía no tengan health; aparecen como **Sin configurar**.
+
+Cada perfil permite configurar:
+
+- URL HTTP/HTTPS de health, independiente del endpoint del chat.
+- Método GET (inicial), HEAD o POST sin cuerpo.
+- Intervalo de 1 a 86400 segundos (inicial: 30), contado desde la última consulta finalizada, y timeout de 1 a 300 segundos (inicial: 5).
+- Código HTTP esperado (inicial: 200).
+- Ruta JSON opcional, como `status` o `checks.0.ready`, y valor esperado (inicial: `ok`). Las cadenas se comparan exactamente, distinguiendo mayúsculas; para otros valores se usa su representación JSON, por ejemplo `true` o `42`. HEAD solo permite validar el código HTTP. Las claves con puntos no se admiten.
+- Encabezado y prefijo de autenticación opcionales, independientes del chat. Sin credencial no se envía autenticación. La credencial se mantiene en memoria durante la sesión y debe ingresarse de nuevo al reiniciar.
+
+El monitoreo comienza automáticamente al abrir la aplicación y continúa en ambas pestañas, con hasta cuatro consultas simultáneas. **Actualizar ahora** fuerza una nueva ronda cuando no hay otra en curso. La interfaz permanece disponible durante las consultas; al cerrar se cancelan las pendientes. Los intervalos son aproximados: una ronda larga puede demorar las consultas siguientes. Las respuestas JSON de health se limitan a 64 KB y no se siguen redirecciones HTTP.
+
+La panorámica muestra el número de agentes saludables por sistema, estado individual, latencia, hora y detalle de la última consulta. Distingue **Sin configurar**, **Sin consultar**, **Saludable**, **No saludable**, **Sin conexión**, **Tiempo agotado** y **Error**. Los resultados viven solo en memoria. Health indica disponibilidad según el criterio configurado; no indica si un agente está ejecutando una tarea.
+
+El diagrama usa conexiones de pertenencia entre el sistema y sus agentes; no representa llamadas ni dependencias entre ellos. Las tarjetas se acomodan al ancho disponible y la vista tiene desplazamiento vertical.
+
+Los grupos y perfiles se guardan juntos en `profiles.json`, mediante escritura temporal y reemplazo. El archivo ahora contiene un objeto con listas `Groups` y `Profiles`; la lista de perfiles del formato anterior se lee y migra automáticamente, importando los sistemas existentes. Los cambios de nombre o eliminación y la reasignación de agentes se guardan en una sola operación. No guardes secretos en URLs, plantillas ni valores esperados.
+
+## Uso del chat y archivos locales
 
 - Usa **Nueva conversación** para iniciar otro chat y **Ctrl+Enter** o **Enviar** para enviar un mensaje.
-- Puedes cambiar de agente antes del primer envío. Una conversación con mensajes queda asociada a su perfil; el perfil puede editarse para actualizar la conexión.
+- Puedes cambiar de sistema y de agente antes del primer envío. El texto del borrador se conserva; si hay adjuntos, se solicita confirmación antes de quitarlos. Una conversación con mensajes restaura su sistema y agente y mantiene bloqueados ambos selectores. **Nueva conversación** vuelve a habilitarlos; el perfil puede editarse para actualizar la conexión.
 - **Cancelar** cancela la espera HTTP local. El backend puede haber procesado la solicitud; revisa su estado antes de reenviar.
 - Ante un fallo o cancelación, el borrador se recupera durante la sesión. Los borradores sin enviar no se guardan.
-- Perfiles: `%LOCALAPPDATA%\Agentest\profiles.json`.
+- Grupos y perfiles: `%LOCALAPPDATA%\Agentest\profiles.json`.
 - Apariencia: `%LOCALAPPDATA%\Agentest\settings.json`.
 - Conversaciones: `%LOCALAPPDATA%\Agentest\conversations\<id>.json`.
 - **Abrir carpeta local** permite consultar esos archivos. Los mensajes y las respuestas se guardan como JSON legible; evita introducir secretos en la plantilla o la URL.
@@ -98,7 +125,7 @@ Los archivos se envían como Base64 dentro del JSON: no se extrae texto de PDF. 
 
 ## Apariencia
 
-El botón **Tema**, junto al selector de agente, permite elegir **Sistema**, **Claro** u **Oscuro**. Por defecto se usa Sistema. Cada selección se guarda en `settings.json` y se restaura al abrir la aplicación.
+El botón **Tema**, debajo de los selectores y junto a los botones de administración, permite elegir **Sistema**, **Claro** u **Oscuro**. Por defecto se usa Sistema. Cada selección se guarda en `settings.json` y se restaura al abrir la aplicación.
 
 Sistema toma el modo de aplicaciones de Windows y actualiza la apariencia al recibir cambios de preferencias. Claro y Oscuro mantienen la elección del usuario. El tema se aplica al chat, los campos, los botones y el editor de perfiles, conservando el borrador. Se usan una paleta propia y las [API de color de WinForms](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.application.setcolormode?view=windowsdesktop-10.0); el soporte nativo del tema del sistema corresponde a Windows 11 o posterior.
 
@@ -140,8 +167,10 @@ Los conectores no dependen de controles WinForms. La interfaz consume sus operac
 
 ## Verificación
 
+La verificación de la interfaz incluye el filtrado Sistema → Agente, grupos sin agentes, el menú Administrar agentes, la creación en el sistema seleccionado y la restauración y bloqueo de selectores al abrir conversaciones guardadas.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/Verify.ps1
 ```
 
-El script crea un ejecutable temporal con el SDK, sin paquetes externos ni un segundo proyecto permanente. Comprueba serialización, rutas de respuesta, adjuntos, persistencia, solicitudes y respuestas con un transporte HTTP simulado en memoria, errores, cancelación, timeout e inicialización de los formularios. Opcionalmente, `-ScreenshotDirectory <carpeta>` genera capturas para revisar el diseño. La conexión al orquestador real debe validarse cuando esté disponible su contrato.
+El script crea un ejecutable temporal con el SDK, sin paquetes externos ni un segundo proyecto permanente. Comprueba serialización, rutas de respuesta, adjuntos, persistencia, solicitudes y respuestas con un transporte HTTP simulado en memoria, errores, cancelación, timeout e inicialización de los formularios. Incluye migración a DEFAULT, configuración y criterios de health, límite de concurrencia, cancelación y conservación del borrador al cambiar de pestaña. También verifica creación y persistencia de grupos vacíos, nombres duplicados, protección de DEFAULT, renombrado y eliminación con reasignación, cancelación del mantenedor y guardado desde la ventana principal conservando el borrador. Opcionalmente, `-ScreenshotDirectory <carpeta>` genera capturas del chat, la panorámica, el editor y el mantenedor en claro y oscuro, con tamaños mínimos y escalado simulado al 125 % de la panorámica y el mantenedor. Los estados de las capturas de la panorámica son datos sintéticos; no representan un backend real. La conexión al orquestador real debe validarse cuando esté disponible su contrato.
