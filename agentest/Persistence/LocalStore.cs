@@ -93,6 +93,14 @@ public sealed class LocalStore
         return WriteAsync(Path.Combine(ConversationsPath, conversation.Id + ".json"), conversation);
     }
 
+    public Task DeleteConversationAsync(string id)
+    {
+        if (!Guid.TryParseExact(id, "N", out _))
+            throw new InvalidDataException("Identificador de conversación inválido.");
+        var path = Path.Combine(ConversationsPath, id + ".json");
+        return Task.Run(() => File.Delete(path));
+    }
+
     private static async Task WriteAsync<T>(string path, T value)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

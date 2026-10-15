@@ -114,7 +114,9 @@ Los grupos y perfiles se guardan juntos en `profiles.json`, mediante escritura t
 ## Uso del chat y archivos locales
 
 - Usa **Nueva conversación** para iniciar otro chat y **Ctrl+Enter** o **Enviar** para enviar un mensaje.
-- Puedes cambiar de sistema y de agente antes del primer envío. El texto del borrador se conserva; si hay adjuntos, se solicita confirmación antes de quitarlos. Una conversación con mensajes restaura su sistema y agente y mantiene bloqueados ambos selectores. **Nueva conversación** vuelve a habilitarlos; el perfil puede editarse para actualizar la conexión.
+- La lista lateral muestra solo las conversaciones del agente seleccionado, identificadas por el ID del perfil, incluso si dos agentes tienen el mismo nombre. Se ordenan por actividad reciente. La cabecera indica el agente y la cantidad de conversaciones; la activa conserva fondo, borde, título en negrita y la indicación **Activa** aunque el foco pase al mensaje.
+- Puedes cambiar de sistema o agente para consultar otro historial. Las conversaciones existentes conservan su agente original; al cambiar se abre un chat nuevo para la selección actual. El texto de un borrador nuevo se conserva y se pide confirmación antes de quitar adjuntos. Si estás redactando en una conversación con mensajes, se avisa antes de descartar ese borrador al cambiar de agente. Abrir una conversación guardada restaura su sistema y agente sin bloquear los selectores.
+- **Eliminar conversación** elimina la conversación seleccionada del historial local después de confirmar. El aviso incluye la pérdida del borrador si existe. No se llama al servidor ni se elimina su conversación remota. Tras eliminar se selecciona la conversación más reciente del mismo agente o se abre un chat vacío si no quedan otras. Cancelar conserva el historial y el borrador; si falla la eliminación del archivo, la conversación permanece en la lista.
 - **Cancelar** cancela la espera HTTP local. El backend puede haber procesado la solicitud; revisa su estado antes de reenviar.
 - Ante un fallo o cancelación, el borrador se recupera durante la sesión. Los borradores sin enviar no se guardan.
 - Grupos y perfiles: `%LOCALAPPDATA%\Agentest\profiles.json`.
@@ -167,7 +169,7 @@ Los conectores no dependen de controles WinForms. La interfaz consume sus operac
 
 ## Verificación
 
-La verificación de la interfaz incluye el filtrado Sistema → Agente, grupos sin agentes, el menú Administrar agentes, la creación en el sistema seleccionado y la restauración y bloqueo de selectores al abrir conversaciones guardadas.
+La verificación de la interfaz incluye el filtrado Sistema → Agente, grupos sin agentes, el menú Administrar agentes, la creación en el sistema seleccionado y la restauración de selectores al abrir conversaciones guardadas. También comprueba aislamiento del historial por ID de agente, navegación entre agentes con conversaciones existentes, cancelación y confirmación de eliminación, conservación de otros historiales y ausencia de conversaciones eliminadas al reiniciar. Las capturas adicionales muestran la selección activa sin foco y el diálogo de eliminación en ambos temas, con tamaño mínimo y escalado simulado.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/Verify.ps1

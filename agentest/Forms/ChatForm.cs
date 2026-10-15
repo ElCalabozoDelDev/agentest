@@ -32,6 +32,7 @@ public sealed class ChatForm : Form
     private bool readingAttachments;
     private bool savingProfile;
     private bool savingTheme;
+    private bool deletingConversation;
     private AppSettings settings = new();
     private ThemePalette palette = ThemePalette.Light;
     private readonly Button themeButton = MakeButton("Tema: Sistema ▾");
@@ -42,7 +43,9 @@ public sealed class ChatForm : Form
     private readonly ComboBox systemList = new() { Name = "ChatSystem", AccessibleName = "Sistema", DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left | AnchorStyles.Right };
     private string activeSystem = "DEFAULT";
     private TableLayoutPanel chatLayout = null!;
-    private readonly ListBox conversationList = new() { Dock = DockStyle.Fill, IntegralHeight = false, BorderStyle = BorderStyle.None };
+    private readonly ConversationListBox conversationList = new();
+    private readonly Label conversationHeading = new() { Dock = DockStyle.Fill, AutoEllipsis = true };
+    private readonly Button deleteConversation = MakeButton("Eliminar conversación");
     private readonly ComboBox profileList = new() { Name = "ChatAgent", AccessibleName = "Agente", DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left | AnchorStyles.Right };
     private readonly RichTextBox transcript = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.White, BorderStyle = BorderStyle.None, DetectUrls = false };
     private readonly TextBox input = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical };
@@ -52,7 +55,7 @@ public sealed class ChatForm : Form
     private readonly Button send = MakeButton("Enviar (Ctrl+Enter)"), cancel = MakeButton("Cancelar"), attach = MakeButton("Adjuntar"), removeAttachment = MakeButton("Quitar adjunto");
     private readonly Button newChat = MakeButton("Nueva conversación");
     private AgentProfile? SelectedProfile => profileList.SelectedItem as AgentProfile;
-    private bool Busy => sending is not null || readingAttachments || savingProfile || savingTheme;
+    private bool Busy => sending is not null || readingAttachments || savingProfile || savingTheme || deletingConversation;
 
     public ChatForm(LocalStore? localStore = null, HealthClient? healthMonitor = null)
     {
@@ -79,6 +82,7 @@ public sealed class ChatForm : Form
         send.Click += async (_, _) => await SendAsync();
         cancel.Click += (_, _) => { sending?.Cancel(); status.Text = "Cancelando solicitud…"; cancel.Enabled = false; };
         newChat.Click += (_, _) => StartConversation();
+        deleteConversation.Click += async (_, _) => await DeleteConversationAsync();
         newProfile.Click += async (_, _) => await EditProfileAsync(create: true);
         editProfile.Click += async (_, _) => await EditProfileAsync(create: false);
         deleteProfile.Click += async (_, _) => await DeleteProfileAsync();
@@ -101,46 +105,34 @@ public sealed class ChatForm : Form
         profileList.SelectedIndexChanged += (_, _) =>
         {
             if (refreshing) return;
-            if (current is not null && current.Messages.Count == 0)
+            if (Busy || !ConfirmAgentChange())
             {
-                if (pendingAttachments.Count > 0 && MessageBox.Show(this,
-                        "Cambiar de agente quitará los adjuntos del borrador. ¿Continuar?", "Cambiar agente",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-                {
-                    RefreshProfiles(current.AgentProfileId);
-                    return;
-                }
-                current.AgentProfileId = SelectedProfile?.Id ?? "";
-                pendingAttachments.Clear();
-                RefreshAttachments();
+                RefreshProfiles(current?.AgentProfileId, activeSystem);
+                return;
             }
-            UpdateControls();
+            ActivateSelectedAgent();
         };
         systemList.SelectedIndexChanged += (_, _) =>
         {
             if (refreshing) return;
             var system = systemList.SelectedItem as string;
             if (system is null) return;
-            if (!ready || Busy || current?.Messages.Count > 0)
+            if (!ready || Busy)
             {
                 RefreshProfiles(current?.AgentProfileId, activeSystem);
                 return;
             }
-            if (pendingAttachments.Count > 0 && MessageBox.Show(this,
-                    "Cambiar de sistema quitará los adjuntos del borrador. ¿Continuar?", "Cambiar sistema",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            if (!ConfirmAgentChange())
             {
                 RefreshProfiles(current?.AgentProfileId, activeSystem);
                 return;
             }
             RefreshProfiles(profiles.FirstOrDefault(p => string.Equals(p.AgentSystem, system, StringComparison.OrdinalIgnoreCase))?.Id, system);
-            if (current is not null) current.AgentProfileId = SelectedProfile?.Id ?? "";
-            pendingAttachments.Clear();
-            RefreshAttachments();
+            ActivateSelectedAgent();
         };
         conversationList.SelectedIndexChanged += (_, _) =>
         {
-            if (refreshing || Busy || conversationList.SelectedItem is not Conversation conversation) return;
+            if (refreshing || Busy || conversationList.SelectedItem is not Conversation conversation || conversation.AgentProfileId != SelectedProfile?.Id) return;
             if (HasDraft() && MessageBox.Show(this, "Al cambiar de conversación se descartará el borrador actual. ¿Continuar?",
                     "Borrador pendiente", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             {
@@ -173,15 +165,20 @@ public sealed class ChatForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        var sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(0, 0, 12, 0) };
-        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        var sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(0, 0, 12, 0) };
+        sidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-        sidebar.Controls.Add(new Label { Text = "Conversaciones", Font = new Font(Font, FontStyle.Bold), Dock = DockStyle.Fill }, 0, 0);
+        conversationHeading.Font = new Font(Font, FontStyle.Bold);
+        sidebar.Controls.Add(conversationHeading, 0, 0);
         newChat.Dock = DockStyle.Fill;
         sidebar.Controls.Add(newChat, 0, 1);
         sidebar.Controls.Add(conversationList, 0, 2);
+        deleteConversation.Dock = DockStyle.Fill;
+        sidebar.Controls.Add(deleteConversation, 0, 3);
         var openFolder = MakeButton("Abrir carpeta local");
         openFolder.Dock = DockStyle.Fill;
         openFolder.Click += (_, _) =>
@@ -193,7 +190,7 @@ public sealed class ChatForm : Form
             }
             catch (Exception ex) { ShowError(ex.Message); }
         };
-        sidebar.Controls.Add(openFolder, 0, 3);
+        sidebar.Controls.Add(openFolder, 0, 4);
         root.Controls.Add(sidebar, 0, 0);
         var chat = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8 };
         chat.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -332,6 +329,7 @@ public sealed class ChatForm : Form
         ThemeAppearance.Apply(this, palette);
         ThemeAppearance.Apply(themeMenu, palette);
         ThemeAppearance.Apply(agentsMenu, palette);
+        conversationList.SetPalette(palette);
         agentsOverview.SetPalette(palette);
         themeButton.Text = settings.Theme switch
         {
@@ -372,6 +370,28 @@ public sealed class ChatForm : Form
         input.Focus();
     }
 
+    private bool ConfirmAgentChange()
+    {
+        if (current?.Messages.Count > 0 && HasDraft())
+            return MessageBox.Show(this, "Al cambiar de agente se descartará el borrador de esta conversación. ¿Continuar?", "Borrador pendiente", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        return pendingAttachments.Count == 0 || MessageBox.Show(this, "Cambiar de agente o sistema quitará los adjuntos del borrador. ¿Continuar?", "Cambiar agente", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+    }
+
+    private void ActivateSelectedAgent()
+    {
+        if (current is null || current.Messages.Count > 0)
+        {
+            current = new Conversation { AgentProfileId = SelectedProfile?.Id ?? "" };
+            input.Clear();
+        }
+        else current.AgentProfileId = SelectedProfile?.Id ?? "";
+        pendingAttachments.Clear();
+        RefreshAttachments();
+        RefreshConversationList();
+        RenderTranscript();
+        UpdateControls();
+    }
+
     private void SelectConversation(Conversation conversation)
     {
         current = conversation;
@@ -397,6 +417,7 @@ public sealed class ChatForm : Form
         profileList.Items.AddRange(profiles.Where(p => string.Equals(p.AgentSystem, activeSystem, StringComparison.OrdinalIgnoreCase)).Cast<object>().ToArray());
         profileList.SelectedItem = selected;
         refreshing = false;
+        RefreshConversationList();
         foreach (var id in healthResults.Keys.Where(id => profiles.All(p => p.Id != id)).ToList()) healthResults.Remove(id);
         agentsOverview.Render(profiles, healthResults, agentGroups);
         UpdateControls();
@@ -406,9 +427,11 @@ public sealed class ChatForm : Form
     {
         refreshing = true;
         conversationList.Items.Clear();
-        conversationList.Items.AddRange(conversations.OrderByDescending(c => c.UpdatedAt).Cast<object>().ToArray());
+        conversationList.Items.AddRange(conversations.Where(c => c.AgentProfileId == SelectedProfile?.Id).OrderByDescending(c => c.UpdatedAt).Cast<object>().ToArray());
         conversationList.SelectedItem = current;
+        conversationHeading.Text = $"Conversaciones\n{SelectedProfile?.Name ?? "Sin agente"} · {conversationList.Items.Count}";
         refreshing = false;
+        deleteConversation.Enabled = ready && !Busy && conversationList.SelectedItem is Conversation;
     }
 
     private void RefreshAttachments()
@@ -430,10 +453,11 @@ public sealed class ChatForm : Form
         newProfile.Enabled = ready && !Busy;
         editProfile.Enabled = ready && !Busy && profile is not null;
         deleteProfile.Enabled = editProfile.Enabled;
-        profileList.Enabled = ready && !Busy && (current is null || current.Messages.Count == 0);
+        profileList.Enabled = ready && !Busy;
         systemList.Enabled = profileList.Enabled;
         profileList.Enabled &= profileList.Items.Count > 0;
         conversationList.Enabled = ready && !Busy;
+        deleteConversation.Enabled = ready && !Busy && conversationList.SelectedItem is Conversation;
         input.Enabled = ready && !Busy;
         send.Enabled = ready && !Busy && profile is not null && HasDraft();
         cancel.Enabled = sending is not null && !sending.IsCancellationRequested;
@@ -533,6 +557,35 @@ public sealed class ChatForm : Form
         }
         catch (Exception ex) { ShowError(ex.Message); }
         finally { savingProfile = false; UpdateControls(); }
+    }
+
+    private async Task DeleteConversationAsync()
+    {
+        if (!ready || Busy || conversationList.SelectedItem is not Conversation conversation || conversation.AgentProfileId != SelectedProfile?.Id) return;
+        using var confirmation = new DeleteConversationForm(conversation, HasDraft(), palette);
+        if (confirmation.ShowDialog(this) != DialogResult.OK) return;
+        deletingConversation = true;
+        UpdateControls();
+        try
+        {
+            await store.DeleteConversationAsync(conversation.Id);
+            conversations.Remove(conversation);
+            var next = conversations.Where(c => c.AgentProfileId == SelectedProfile?.Id).OrderByDescending(c => c.UpdatedAt).FirstOrDefault();
+            if (next is not null) SelectConversation(next);
+            else
+            {
+                current = new Conversation { AgentProfileId = SelectedProfile?.Id ?? "" };
+                input.Clear();
+                pendingAttachments.Clear();
+                RefreshAttachments();
+                RefreshConversationList();
+                RenderTranscript();
+            }
+            status.Text = "Conversación eliminada del historial local.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { ShowError("No se pudo eliminar la conversación; se conserva en la lista. " + ex.Message); }
+        finally { deletingConversation = false; UpdateControls(); }
     }
 
     private async Task ManageGroupsAsync()

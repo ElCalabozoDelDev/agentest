@@ -106,6 +106,7 @@ internal static class Verification
         VerifyMonitorUi(data);
         VerifyGroupManagerIntegration(data);
         VerifyChatSelectors(data, screenshotDirectory);
+        VerifyConversationHistory(data, screenshotDirectory);
         Application.SetColorMode(SystemColorMode.Classic);
         using (var editor = new ProfileEditorForm(new AgentProfile(), "session-secret"))
         {
@@ -316,6 +317,113 @@ internal static class Verification
         form.Close();
     }
 
+    private static void VerifyConversationHistory(string data, string? screenshots)
+    {
+        var store = new LocalStore(Path.Combine(data, "history-ui"));
+        var a = new AgentProfile { Name = "Agente de pruebas", AgentSystem = "Sistema A" };
+        var sibling = new AgentProfile { Name = a.Name, AgentSystem = "Sistema A" };
+        var b = new AgentProfile { Name = "Evaluador", AgentSystem = "Sistema B" };
+        Conversation Make(AgentProfile profile, string title, int minutes) => new()
+        {
+            AgentProfileId = profile.Id, Title = title, UpdatedAt = DateTimeOffset.Now.AddMinutes(minutes),
+            RemoteConversationId = "remote-" + profile.Id, Messages = [new ChatMessage { Text = title }]
+        };
+        var newest = Make(a, "Revisión de consultas", 0);
+        var older = Make(a, "Prueba anterior", -10);
+        var other = Make(sibling, "Prueba independiente", -5);
+        var foreign = Make(b, "Evaluación del sistema B", -3);
+        Task.Run(async () =>
+        {
+            await store.SaveCatalogAsync(new AgentCatalog { Groups = ["DEFAULT", "Sistema A", "Sistema B"], Profiles = [a, sibling, b] });
+            foreach (var conversation in new[] { newest, older, other, foreign }) await store.SaveConversationAsync(conversation);
+        }).GetAwaiter().GetResult();
+        using var form = new ChatForm(store);
+        form.Show();
+        var input = Descendants(form).OfType<TextBox>().Single(t => t.Multiline);
+        WaitForUi(() => input.Enabled);
+        var systems = Descendants(form).OfType<ComboBox>().Single(c => c.Name == "ChatSystem");
+        var agents = Descendants(form).OfType<ComboBox>().Single(c => c.Name == "ChatAgent");
+        var list = Descendants(form).OfType<ListBox>().Single(l => l.Name == "AgentConversations");
+        var delete = Descendants(form).OfType<Button>().Single(button => button.Text == "Eliminar conversación");
+        Check(list.Items.Count == 2 && list.Items.Cast<Conversation>().All(c => c.AgentProfileId == a.Id), "History is not isolated by selected profile ID.");
+        Check(((Conversation)list.Items[0]).Id == newest.Id && !delete.Enabled, "History ordering or initial delete state is incorrect.");
+        input.Text = "Borrador conservado";
+        agents.SelectedItem = agents.Items.Cast<AgentProfile>().Single(p => p.Id == sibling.Id);
+        Check(list.Items.Count == 1 && ((Conversation)list.Items[0]).Id == other.Id && input.Text == "Borrador conservado", "Agents with the same name shared history or lost the draft.");
+        input.Clear();
+        list.SelectedIndex = 0;
+        agents.SelectedItem = agents.Items.Cast<AgentProfile>().Single(p => p.Id == a.Id);
+        Check(list.Items.Count == 2 && list.SelectedIndex == -1 && Descendants(form).OfType<RichTextBox>().Single().Text.StartsWith("Inicia una conversación"), "Switching from an existing conversation exposed the previous agent's transcript.");
+        list.SelectedIndex = 0;
+        input.Focus();
+        Application.DoEvents();
+        Check(list.DrawMode == DrawMode.OwnerDrawFixed && list.SelectedItem is Conversation selected && selected.Id == newest.Id && delete.Enabled, "Active conversation selection was lost on focus change.");
+        input.Text = "Borrador que requiere confirmación";
+        form.BeginInvoke((Action)(() =>
+        {
+            var confirmation = Application.OpenForms.OfType<DeleteConversationForm>().Single();
+            Check(Descendants(confirmation).OfType<Label>().Any(l => l.Text.Contains("borrador")), "Delete confirmation must disclose draft loss.");
+            Descendants(confirmation).OfType<Button>().Single(button => button.Text == "Cancelar").PerformClick();
+        }));
+        delete.PerformClick();
+        Check(list.Items.Count == 2 && input.Text == "Borrador que requiere confirmación" && File.Exists(Path.Combine(store.RootPath, "conversations", newest.Id + ".json")), "Cancelling deletion lost history or draft.");
+        ConfirmDelete();
+        WaitForUi(() => input.Enabled && list.Items.Count == 1);
+        Check(input.Text == "" && ((Conversation)list.SelectedItem!).Id == older.Id && !File.Exists(Path.Combine(store.RootPath, "conversations", newest.Id + ".json")), "Confirmed deletion did not remove the local file and select the next history.");
+        ConfirmDelete();
+        WaitForUi(() => input.Enabled && list.Items.Count == 0);
+        Check(!delete.Enabled && agents.SelectedItem is AgentProfile selectedAgent && selectedAgent.Id == a.Id, "Deleting the last history did not leave an empty chat for the same agent.");
+        var persisted = Task.Run(() => store.LoadConversationsAsync()).GetAwaiter().GetResult();
+        Check(persisted.Items.Count == 2 && persisted.Items.Any(c => c.Id == other.Id && c.AgentProfileId == sibling.Id) && persisted.Items.Any(c => c.Id == foreign.Id && c.AgentProfileId == b.Id), "Deletion changed another agent's history.");
+        agents.SelectedItem = agents.Items.Cast<AgentProfile>().Single(p => p.Id == sibling.Id);
+        Check(list.Items.Count == 1 && ((Conversation)list.Items[0]).Id == other.Id, "Remaining history was not restored after agent selection.");
+        list.SelectedIndex = 0;
+        systems.SelectedItem = "Sistema B";
+        Check(list.Items.Count == 1 && ((Conversation)list.Items[0]).Id == foreign.Id, "System navigation did not refresh the selected agent's histories.");
+        list.SelectedIndex = 0;
+        if (!string.IsNullOrEmpty(screenshots))
+        {
+            foreach (var mode in new[] { "clara", "oscura" })
+            {
+                var theme = Descendants(form).OfType<Button>().Single(button => button.Text.StartsWith("Tema:"));
+                theme.ContextMenuStrip!.Items.OfType<ToolStripMenuItem>().Single(item => item.Text == "Interfaz " + mode).PerformClick();
+                WaitForUi(() => theme.Enabled && input.Enabled);
+                input.Focus();
+                form.Size = form.MinimumSize;
+                Application.DoEvents();
+                Capture(form, Path.Combine(screenshots, "history-" + mode + "-minimum.png"));
+                form.BeginInvoke((Action)(() =>
+                {
+                    var confirmation = Application.OpenForms.OfType<DeleteConversationForm>().Single();
+                    Capture(confirmation, Path.Combine(screenshots, "delete-history-" + mode + ".png"));
+                    Descendants(confirmation).OfType<Button>().Single(button => button.Text == "Cancelar").PerformClick();
+                }));
+                delete.PerformClick();
+            }
+            form.Scale(new System.Drawing.SizeF(1.25f, 1.25f));
+            form.PerformLayout();
+            foreach (var layout in Descendants(form).OfType<TableLayoutPanel>()) layout.PerformLayout();
+            Application.DoEvents();
+            Capture(form, Path.Combine(screenshots, "history-scaled.png"));
+        }
+        form.Close();
+        using var reopened = new ChatForm(store);
+        reopened.Show();
+        WaitForUi(() => Descendants(reopened).OfType<TextBox>().Single(t => t.Multiline).Enabled);
+        Check(Descendants(reopened).OfType<ListBox>().Single(l => l.Name == "AgentConversations").Items.Count == 0, "Deleted conversations reappeared after restart.");
+        reopened.Close();
+
+        void ConfirmDelete()
+        {
+            form.BeginInvoke((Action)(() =>
+            {
+                var confirmation = Application.OpenForms.OfType<DeleteConversationForm>().Single();
+                Descendants(confirmation).OfType<Button>().Single(button => button.Text == "Eliminar").PerformClick();
+            }));
+            delete.PerformClick();
+        }
+    }
+
     private static void VerifyChatSelectors(string data, string? screenshots)
     {
         var store = new LocalStore(Path.Combine(data, "selectors-ui"));
@@ -364,9 +472,10 @@ internal static class Verification
         WaitForUi(() => input.Enabled && agents.Items.Count == 3);
         Check(systems.Text == "Sistema A" && agents.Text == "Nuevo agente" && input.Text == "Borrador conservado", "Creation did not update the filtered selectors or preserve the draft.");
         input.Clear();
-        var conversations = Descendants(form).OfType<ListBox>().Single(l => l.Items.Cast<object>().Any(o => o is Conversation));
+        systems.SelectedItem = "Sistema B";
+        var conversations = Descendants(form).OfType<ListBox>().Single(l => l.Name == "AgentConversations");
         conversations.SelectedItem = conversations.Items.Cast<Conversation>().Single(c => c.Id == history.Id);
-        Check(systems.Text == "Sistema B" && agents.Text == "Evaluador" && !systems.Enabled && !agents.Enabled, "Loading history must restore and lock both selectors.");
+        Check(systems.Text == "Sistema B" && agents.Text == "Evaluador" && systems.Enabled && agents.Enabled, "Loading history must restore selectors without blocking navigation to another agent.");
         Descendants(form).OfType<Button>().Single(b => b.Text == "Nueva conversación").PerformClick();
         Check(systems.Enabled && agents.Enabled && systems.Text == "Sistema B", "New chat did not unlock the selectors.");
         if (!string.IsNullOrEmpty(screenshots))
@@ -481,6 +590,13 @@ internal static class Verification
         conversation.Id = "../escape";
         Reject(() => store.SaveConversationAsync(conversation), "Path traversal accepted.");
         conversation.Id = restored.Id;
+        Reject(() => store.DeleteConversationAsync("../escape"), "Deleting history accepted path traversal.");
+        Reject(() => store.DeleteConversationAsync(Guid.NewGuid().ToString()), "Deleting history must use a local compact GUID, not a remote ID.");
+        var blocked = Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(Path.Combine(data, "conversations", blocked + ".json"));
+        try { await store.DeleteConversationAsync(blocked); throw new Exception("Deleting a directory as history was accepted."); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { Check(File.Exists(Path.Combine(data, "conversations", conversation.Id + ".json")), "A failed deletion changed another conversation."); }
         var tesitoProfile = new AgentProfile
         {
             Endpoint = "http://127.0.0.1:8000/api/v1/conversations/runs",
