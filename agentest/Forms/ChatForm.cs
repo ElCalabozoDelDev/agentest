@@ -2,6 +2,8 @@ using System.Diagnostics;
 using agentest.Models;
 using agentest.Persistence;
 using agentest.Services;
+using agentest.Forms.Theming;
+using Microsoft.Win32;
 
 namespace agentest.Forms;
 
@@ -19,6 +21,11 @@ public sealed class ChatForm : Form
     private bool ready;
     private bool readingAttachments;
     private bool savingProfile;
+    private bool savingTheme;
+    private AppSettings settings = new();
+    private ThemePalette palette = ThemePalette.Light;
+    private readonly Button themeButton = MakeButton("Tema: Sistema ▾");
+    private readonly ContextMenuStrip themeMenu = new();
     private TableLayoutPanel chatLayout = null!;
     private readonly ListBox conversationList = new() { Dock = DockStyle.Fill, IntegralHeight = false, BorderStyle = BorderStyle.None };
     private readonly ComboBox profileList = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250 };
@@ -30,7 +37,7 @@ public sealed class ChatForm : Form
     private readonly Button send = MakeButton("Enviar (Ctrl+Enter)"), cancel = MakeButton("Cancelar"), attach = MakeButton("Adjuntar"), removeAttachment = MakeButton("Quitar adjunto");
     private readonly Button newChat = MakeButton("Nueva conversación"), newProfile = MakeButton("Nuevo perfil"), editProfile = MakeButton("Editar perfil"), deleteProfile = MakeButton("Eliminar perfil");
     private AgentProfile? SelectedProfile => profileList.SelectedItem as AgentProfile;
-    private bool Busy => sending is not null || readingAttachments || savingProfile;
+    private bool Busy => sending is not null || readingAttachments || savingProfile || savingTheme;
 
     public ChatForm(LocalStore? localStore = null)
     {
@@ -42,6 +49,9 @@ public sealed class ChatForm : Form
         Font = new Font("Segoe UI", 10);
         BackColor = Color.FromArgb(243, 246, 250);
         BuildLayout();
+        BuildThemeMenu();
+        ApplyTheme();
+        SystemEvents.UserPreferenceChanged += SystemPreferenceChanged;
         Shown += async (_, _) => await InitializeAsync();
         send.Click += async (_, _) => await SendAsync();
         cancel.Click += (_, _) => { sending?.Cancel(); status.Text = "Cancelando solicitud…"; cancel.Enabled = false; };
@@ -110,7 +120,7 @@ public sealed class ChatForm : Form
         UpdateControls();
     }
 
-    private static Button MakeButton(string text) => new() { Text = text, AutoSize = true, Padding = new Padding(5), Margin = new Padding(3) };
+    private static Button MakeButton(string text) => new ThemeButton { Text = text, AutoSize = true, Padding = new Padding(5), Margin = new Padding(3) };
 
     private void BuildLayout()
     {
@@ -142,7 +152,7 @@ public sealed class ChatForm : Form
         var chat = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8 };
         chatLayout = chat;
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        chat.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         chat.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         chat.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
@@ -153,8 +163,17 @@ public sealed class ChatForm : Form
         profileBar.Controls.Add(new Label { Text = "Agente", AutoSize = true, Margin = new Padding(0, 8, 12, 0) });
         profileList.Margin = new Padding(0, 4, 0, 0);
         profileBar.Controls.Add(profileList);
+        themeButton.Margin = new Padding(12, 0, 0, 0);
+        profileBar.Controls.Add(themeButton);
         chat.Controls.Add(profileBar, 0, 0);
-        var profileButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        var profileButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = new Padding(0, 0, 0, 6)
+        };
         profileButtons.Controls.AddRange([newProfile, editProfile, deleteProfile]);
         chat.Controls.Add(profileButtons, 0, 1);
         chat.Controls.Add(capabilities, 0, 2);
@@ -180,6 +199,12 @@ public sealed class ChatForm : Form
     {
         try
         {
+            try { settings = await store.LoadSettingsAsync(); }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+            {
+                ShowError("No se pudo cargar la apariencia guardada. Se usará el tema del sistema.\n" + ex.Message);
+            }
+            ApplyTheme();
             profiles = await store.LoadProfilesAsync();
             await store.SaveProfilesAsync(profiles);
             var loaded = await store.LoadConversationsAsync();
@@ -206,6 +231,67 @@ public sealed class ChatForm : Form
     }
 
     private bool HasDraft() => !string.IsNullOrWhiteSpace(input.Text) || pendingAttachments.Count > 0;
+
+    private void BuildThemeMenu()
+    {
+        themeButton.ContextMenuStrip = themeMenu;
+        foreach (var (mode, label) in new[]
+                 { (ThemeMode.System, "Usar tema del sistema"), (ThemeMode.Light, "Interfaz clara"), (ThemeMode.Dark, "Interfaz oscura") })
+        {
+            var item = new ToolStripMenuItem(label) { Tag = mode };
+            item.Click += async (_, _) => await ChangeThemeAsync(mode);
+            themeMenu.Items.Add(item);
+        }
+        themeButton.Click += (_, _) => themeMenu.Show(themeButton, new Point(0, themeButton.Height));
+    }
+
+    private async Task ChangeThemeAsync(ThemeMode mode)
+    {
+        if (!ready || savingTheme) return;
+        savingTheme = true;
+        UpdateControls();
+        try
+        {
+            var updated = new AppSettings { Theme = mode };
+            await store.SaveSettingsAsync(updated);
+            settings = updated;
+            ApplyTheme();
+        }
+        catch (Exception ex) { ShowError("No se pudo guardar el tema: " + ex.Message); }
+        finally { savingTheme = false; UpdateControls(); }
+    }
+
+    private void ApplyTheme()
+    {
+        palette = ThemeAppearance.Resolve(settings.Theme);
+        // Resolve System on every change so Windows preferences can be followed without restarting.
+        Application.SetColorMode(palette.IsDark ? SystemColorMode.Dark : SystemColorMode.Classic);
+        foreach (Form form in Application.OpenForms) ThemeAppearance.Apply(form, palette);
+        ThemeAppearance.Apply(this, palette);
+        ThemeAppearance.Apply(themeMenu, palette);
+        themeButton.Text = settings.Theme switch
+        {
+            ThemeMode.Light => "Tema: Claro ▾",
+            ThemeMode.Dark => "Tema: Oscuro ▾",
+            _ => $"Tema: Sistema ({(palette.IsDark ? "oscuro" : "claro")}) ▾"
+        };
+        foreach (ToolStripMenuItem item in themeMenu.Items) item.Checked = Equals(item.Tag, settings.Theme);
+        RenderTranscript();
+    }
+
+    private void SystemPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                if (!IsDisposed && settings.Theme == ThemeMode.System &&
+                    ThemeAppearance.Resolve(settings.Theme).IsDark != palette.IsDark) ApplyTheme();
+            }));
+        }
+        catch (InvalidOperationException) { /* The window may close before the notification is dispatched. */ }
+    }
 
     private void StartConversation()
     {
@@ -263,6 +349,7 @@ public sealed class ChatForm : Form
     private void UpdateControls()
     {
         var profile = SelectedProfile;
+        themeButton.Enabled = ready && !savingTheme;
         newChat.Enabled = ready && !Busy;
         newProfile.Enabled = ready && !Busy;
         editProfile.Enabled = ready && !Busy && profile is not null;
@@ -290,12 +377,12 @@ public sealed class ChatForm : Form
         }
         foreach (var message in current.Messages)
         {
-            transcript.SelectionColor = message.Role == "user" ? Color.FromArgb(29, 78, 160) : message.Role == "assistant" ? Color.FromArgb(18, 108, 76) : Color.FromArgb(170, 65, 25);
+            transcript.SelectionColor = message.Role == "user" ? palette.User : message.Role == "assistant" ? palette.Assistant : palette.Notice;
             transcript.SelectionFont = new Font(transcript.Font, FontStyle.Bold);
             var role = message.Role == "user" ? "Tú" : message.Role == "assistant" ? "Agente" : "Sistema";
             var delivery = message.DeliveryStatus switch { "pending" => " · enviando", "failed" => " · fallido", "cancelled" => " · cancelado", "interrupted" => " · interrumpido", _ => "" };
             transcript.AppendText($"{role} · {message.CreatedAt.LocalDateTime:dd/MM HH:mm}{delivery}\n");
-            transcript.SelectionColor = Color.FromArgb(35, 42, 52);
+            transcript.SelectionColor = palette.Text;
             transcript.SelectionFont = transcript.Font;
             transcript.AppendText(message.Text + "\n");
             foreach (var attachment in message.Attachments)
@@ -310,7 +397,7 @@ public sealed class ChatForm : Form
     {
         var profile = create ? new AgentProfile { Name = "Nuevo agente" } : SelectedProfile;
         if (profile is null) return;
-        using var editor = new ProfileEditorForm(profile, credentials.GetValueOrDefault(profile.Id, ""));
+        using var editor = new ProfileEditorForm(profile, credentials.GetValueOrDefault(profile.Id, ""), palette);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         if (pendingAttachments.Count > 0 && MessageBox.Show(this,
                 "Guardar este perfil quitará los adjuntos del borrador. ¿Continuar?", "Actualizar perfil",
@@ -476,7 +563,13 @@ public sealed class ChatForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { sending?.Dispose(); client.Dispose(); }
+        if (disposing)
+        {
+            SystemEvents.UserPreferenceChanged -= SystemPreferenceChanged;
+            themeMenu.Dispose();
+            sending?.Dispose();
+            client.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

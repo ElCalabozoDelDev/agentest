@@ -14,6 +14,7 @@ public sealed class AgentProfile
     public int MaxAttachmentMegabytes { get; set; } = 10;
     public string ResponseTextPath { get; set; } = "answer";
     public string ResponseConversationIdPath { get; set; } = "conversation_id";
+    public bool BackendCreatesConversation { get; set; }
     public string RequestTemplate { get; set; } = """
         {
           "query": "{{message}}",

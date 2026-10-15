@@ -24,6 +24,7 @@ using agentest.Models;
 using agentest.Persistence;
 using agentest.Services;
 using agentest.Forms;
+using agentest.Forms.Theming;
 
 internal static class Verification
 {
@@ -56,6 +57,28 @@ internal static class Verification
             input.Text = "UI check";
             Application.DoEvents();
             Check(send.Enabled, "Non-empty composer must allow send with a profile.");
+            var themeButton = Descendants(form).OfType<Button>().Single(b => b.Text.StartsWith("Tema:"));
+            var menu = themeButton.ContextMenuStrip!;
+            menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "Interfaz oscura").PerformClick();
+            WaitForUi(() => themeButton.Enabled && input.Enabled && send.Enabled && themeButton.Text.StartsWith("Tema: Oscuro"));
+            Check(form.BackColor == ThemePalette.Dark.Window && input.BackColor == ThemePalette.Dark.Surface,
+                "Dark theme did not cover the window and composer.");
+            Check(input.Text == "UI check", "Theme change lost the draft.");
+            Check(input.Enabled && send.Enabled, "Theme change left the composer disabled.");
+            Check(new LocalStore(data).LoadSettingsAsync().GetAwaiter().GetResult().Theme == ThemeMode.Dark,
+                "Dark theme selection was not saved.");
+            if (!string.IsNullOrEmpty(screenshotDirectory))
+            {
+                Directory.CreateDirectory(screenshotDirectory);
+                Capture(form, Path.Combine(screenshotDirectory, "chat-dark.png"));
+            }
+            menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "Interfaz clara").PerformClick();
+            WaitForUi(() => themeButton.Enabled && themeButton.Text.StartsWith("Tema: Claro"));
+            Check(input.BackColor == ThemePalette.Light.Surface, "Switching back to light failed.");
+            menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "Usar tema del sistema").PerformClick();
+            WaitForUi(() => themeButton.Enabled && themeButton.Text.StartsWith("Tema: Sistema"));
+            Check(new LocalStore(data).LoadSettingsAsync().GetAwaiter().GetResult().Theme == ThemeMode.System,
+                "System theme selection was not saved.");
             input.Clear();
             if (!string.IsNullOrEmpty(screenshotDirectory))
             {
@@ -64,6 +87,15 @@ internal static class Verification
             }
             form.Close();
         }
+        new LocalStore(data).SaveSettingsAsync(new AppSettings { Theme = ThemeMode.Dark }).GetAwaiter().GetResult();
+        using (var restoredForm = new ChatForm(new LocalStore(data)))
+        {
+            restoredForm.Show();
+            WaitForUi(() => Descendants(restoredForm).OfType<Button>().Any(b => b.Enabled && b.Text.StartsWith("Tema: Oscuro")));
+            Check(restoredForm.BackColor == ThemePalette.Dark.Window, "Saved dark theme was not restored on startup.");
+            restoredForm.Close();
+        }
+        Application.SetColorMode(SystemColorMode.Classic);
         using (var editor = new ProfileEditorForm(new AgentProfile(), "session-secret"))
         {
             editor.Show();
@@ -72,7 +104,30 @@ internal static class Verification
             if (!string.IsNullOrEmpty(screenshotDirectory)) Capture(editor, Path.Combine(screenshotDirectory, "profile.png"));
             editor.Close();
         }
-        Console.WriteLine($"PASS: {assertions} checks (JSON contracts, HTTP, cancellation, timeout, persistence, attachments, WinForms).");
+        Application.SetColorMode(SystemColorMode.Dark);
+        using (var editor = new ProfileEditorForm(new AgentProfile(), "", ThemePalette.Dark))
+        {
+            editor.Show();
+            Application.DoEvents();
+            Check(editor.BackColor == ThemePalette.Dark.Window &&
+                Descendants(editor).OfType<TextBox>().All(t => t.BackColor == ThemePalette.Dark.Surface),
+                "Dark theme did not cover profile fields.");
+            if (!string.IsNullOrEmpty(screenshotDirectory)) Capture(editor, Path.Combine(screenshotDirectory, "profile-dark.png"));
+            editor.Close();
+        }
+        Console.WriteLine($"PASS: {assertions} checks (JSON contracts, HTTP, cancellation, timeout, persistence, attachments, WinForms, themes).");
+    }
+
+    private static void WaitForUi(Func<bool> completed)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!completed())
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("UI operation did not finish.");
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+        Application.DoEvents();
     }
 
     private static IEnumerable<Control> Descendants(Control control)
@@ -136,6 +191,17 @@ internal static class Verification
         try { await AttachmentService.ReadAsync(largeFile, new AgentProfile { AcceptsAttachments = true, MaxAttachmentMegabytes = 1 }); throw new Exception("Oversized file accepted."); }
         catch (InvalidOperationException) { assertions++; }
         var store = new LocalStore(data);
+        Check((await store.LoadSettingsAsync()).Theme == ThemeMode.System, "Default must follow the system.");
+        foreach (var mode in Enum.GetValues<ThemeMode>())
+        {
+            await store.SaveSettingsAsync(new AppSettings { Theme = mode });
+            Check((await store.LoadSettingsAsync()).Theme == mode, "Theme preference roundtrip failed.");
+        }
+        Check(ThemeAppearance.Resolve(ThemeMode.System, true).IsDark &&
+            !ThemeAppearance.Resolve(ThemeMode.System, false).IsDark, "System theme resolution failed.");
+        Check(!ThemeAppearance.Resolve(ThemeMode.Light, true).IsDark &&
+            ThemeAppearance.Resolve(ThemeMode.Dark, false).IsDark, "Explicit preference must override system theme.");
+        await store.SaveSettingsAsync(new AppSettings { Theme = ThemeMode.Light });
         await store.SaveProfilesAsync([profile]);
         await store.SaveConversationAsync(conversation);
         Check((await store.LoadProfilesAsync()).Single().Id == profile.Id, "Profile roundtrip failed.");
@@ -150,6 +216,52 @@ internal static class Verification
         conversation.Id = "../escape";
         Reject(() => store.SaveConversationAsync(conversation), "Path traversal accepted.");
         conversation.Id = restored.Id;
+        var tesitoProfile = new AgentProfile
+        {
+            Endpoint = "http://127.0.0.1:8000/api/v1/conversations/runs",
+            BackendCreatesConversation = true,
+            ResponseTextPath = "response",
+            RequestTemplate = """{"message":"{{message}}","conversation_id":"{{conversationId}}"}"""
+        };
+        var tesitoConversation = new Conversation { AgentProfileId = tesitoProfile.Id };
+        var tesitoMessage = new ChatMessage { Text = "Hola" };
+        var tesitoId = Guid.NewGuid().ToString();
+        var requests = 0;
+        using (var client = new OrchestratorClient(new FakeBackend(async (request, cancellation) =>
+        {
+            var payload = JsonNode.Parse(await request.Content!.ReadAsStringAsync(cancellation))!.AsObject();
+            Check(request.RequestUri!.AbsolutePath == "/api/v1/conversations/runs" && request.Method == HttpMethod.Post,
+                "Tesito endpoint or method differs from OpenAPI.");
+            Check(payload.Count == 2 && payload["message"]!.GetValue<string>() == "Hola", "Tesito payload differs from RunCreate.");
+            if (requests++ == 0) Check(payload.ContainsKey("conversation_id") && payload["conversation_id"] is null,
+                "New backend conversation must send JSON null, not a local UUID or the string null.");
+            else Check(payload["conversation_id"]!.GetValue<string>() == tesitoId, "Follow-up must use the backend UUID.");
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent(new JsonObject
+                {
+                    ["id"] = Guid.NewGuid().ToString(), ["conversation_id"] = tesitoId,
+                    ["status"] = "completed", ["response"] = "Hola desde Tesito"
+                }.ToJsonString(), Encoding.UTF8, "application/json")
+            };
+        })))
+        {
+            var reply = await client.SendAsync(tesitoProfile, tesitoConversation, tesitoMessage, "", CancellationToken.None);
+            Check(reply.Text == "Hola desde Tesito", "Tesito response field was not mapped.");
+            tesitoConversation.RemoteConversationId = reply.ConversationId;
+            await client.SendAsync(tesitoProfile, tesitoConversation, tesitoMessage, "", CancellationToken.None);
+        }
+        await store.SaveProfilesAsync([tesitoProfile]);
+        Check((await store.LoadProfilesAsync()).Single().BackendCreatesConversation, "Backend conversation setting was not persisted.");
+        using (var client = new OrchestratorClient(new FakeBackend((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+               { Content = new StringContent("{\"detail\":\"Conversation not found\"}") }))))
+        {
+            try { await client.SendAsync(tesitoProfile, tesitoConversation, tesitoMessage, "", CancellationToken.None); throw new Exception("404 accepted."); }
+            catch (HttpRequestException ex)
+            {
+                Check(ex.StatusCode == HttpStatusCode.NotFound && ex.Message.Contains("Conversation not found"), "404 diagnosis lost backend detail.");
+            }
+        }
         using (var client = new OrchestratorClient(new FakeBackend(async (request, cancellation) =>
         {
             Check(request.Headers.Authorization?.ToString() == "Bearer secret", "Authentication header failed.");
@@ -198,9 +310,10 @@ internal static class Verification
 '@
     Set-Content -LiteralPath (Join-Path $verificationDirectory 'Program.cs') -Value $source -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $verificationDirectory 'NuGet.Config') -Value '<configuration><packageSources><clear /></packageSources></configuration>' -Encoding UTF8
-    & dotnet restore (Join-Path $verificationDirectory 'Verify.csproj') --configfile (Join-Path $verificationDirectory 'NuGet.Config')
+    $artifactsProperty = '-p:ArtifactsPath=' + (Join-Path $verificationDirectory 'artifacts')
+    & dotnet restore (Join-Path $verificationDirectory 'Verify.csproj') --configfile (Join-Path $verificationDirectory 'NuGet.Config') $artifactsProperty
     if ($LASTEXITCODE -ne 0) { throw "Verification restore failed with exit code $LASTEXITCODE" }
-    $runArguments = @('run', '--no-restore', '-p:UseSharedCompilation=false', '--project', (Join-Path $verificationDirectory 'Verify.csproj'))
+    $runArguments = @('run', '--no-restore', '-p:UseSharedCompilation=false', $artifactsProperty, '--project', (Join-Path $verificationDirectory 'Verify.csproj'))
     if ($ScreenshotDirectory) {
         $runArguments += @('--', [IO.Path]::GetFullPath($ScreenshotDirectory))
     }

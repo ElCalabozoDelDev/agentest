@@ -35,6 +35,8 @@ public sealed class OrchestratorClient : IDisposable
             throw new ArgumentException("La plantilla de request debe ser un objeto JSON.");
         if (profile.AcceptsAttachments && !ContainsPlaceholder(JsonNode.Parse(profile.RequestTemplate), "{{attachments}}"))
             throw new ArgumentException("Para admitir adjuntos, agrega un valor JSON completo \"{{attachments}}\" a la plantilla.");
+        if (profile.BackendCreatesConversation && string.IsNullOrWhiteSpace(profile.ResponseConversationIdPath))
+            throw new ArgumentException("Define la ruta del ID de respuesta para reutilizar la conversación creada por el backend.");
         if (!string.IsNullOrWhiteSpace(profile.AuthenticationHeader))
         {
             using var request = new HttpRequestMessage();
@@ -63,7 +65,8 @@ public sealed class OrchestratorClient : IDisposable
         var values = new Dictionary<string, JsonNode?>
         {
             ["{{message}}"] = JsonValue.Create(message.Text),
-            ["{{conversationId}}"] = JsonValue.Create(conversation.RemoteConversationId ?? conversation.Id),
+            ["{{conversationId}}"] = JsonValue.Create(conversation.RemoteConversationId ??
+                (profile.BackendCreatesConversation ? null : conversation.Id)),
             ["{{agentId}}"] = JsonValue.Create(profile.Id),
             ["{{history}}"] = JsonSerializer.SerializeToNode(history),
             ["{{attachments}}"] = JsonSerializer.SerializeToNode(attachments)
@@ -120,7 +123,10 @@ public sealed class OrchestratorClient : IDisposable
             using var response = await client.SendAsync(request, timeout.Token);
             var raw = await response.Content.ReadAsStringAsync(timeout.Token);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"El orquestador respondió HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).", null, response.StatusCode);
+            {
+                var detail = GetErrorDetail(raw);
+                throw new HttpRequestException($"El orquestador respondió HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).{detail}", null, response.StatusCode);
+            }
             var text = ExtractResponseText(raw, profile.ResponseTextPath.Trim());
             var conversationId = string.IsNullOrWhiteSpace(profile.ResponseConversationIdPath)
                 ? null : ExtractResponseText(raw, profile.ResponseConversationIdPath.Trim());
@@ -132,6 +138,21 @@ public sealed class OrchestratorClient : IDisposable
         {
             throw new TimeoutException($"El orquestador no respondió en {profile.TimeoutSeconds} segundos.");
         }
+    }
+
+    private static string GetErrorDetail(string raw)
+    {
+        var detail = raw.Trim();
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("detail", out var value))
+                detail = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.GetRawText();
+        }
+        catch (JsonException) { /* Non-JSON error bodies are also useful when diagnosing the endpoint. */ }
+        if (detail.Length > 2000) detail = detail[..2000] + "…";
+        return string.IsNullOrWhiteSpace(detail) ? "" : "\n" + detail;
     }
 
     public void Dispose() => client.Dispose();

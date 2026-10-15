@@ -13,7 +13,23 @@ public sealed class LocalStore
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Agentest");
     }
     private string ProfilesPath => Path.Combine(RootPath, "profiles.json");
+    private string SettingsPath => Path.Combine(RootPath, "settings.json");
     private string ConversationsPath => Path.Combine(RootPath, "conversations");
+
+    public async Task<AppSettings> LoadSettingsAsync()
+    {
+        if (!File.Exists(SettingsPath)) return new AppSettings();
+        var settings = JsonSerializer.Deserialize<AppSettings>(await File.ReadAllTextAsync(SettingsPath), Options)
+            ?? throw new InvalidDataException("El archivo de configuración no es válido.");
+        if (!Enum.IsDefined(settings.Theme)) throw new InvalidDataException("El tema guardado no es válido.");
+        return settings;
+    }
+
+    public Task SaveSettingsAsync(AppSettings settings)
+    {
+        if (!Enum.IsDefined(settings.Theme)) throw new ArgumentException("El tema no es válido.");
+        return WriteAsync(SettingsPath, settings);
+    }
 
     public async Task<List<AgentProfile>> LoadProfilesAsync()
     {

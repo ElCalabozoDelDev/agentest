@@ -91,9 +91,41 @@ Los archivos se envían como Base64 dentro del JSON: no se extrae texto de PDF. 
 - **Cancelar** cancela la espera HTTP local. El backend puede haber procesado la solicitud; revisa su estado antes de reenviar.
 - Ante un fallo o cancelación, el borrador se recupera durante la sesión. Los borradores sin enviar no se guardan.
 - Perfiles: `%LOCALAPPDATA%\Agentest\profiles.json`.
+- Apariencia: `%LOCALAPPDATA%\Agentest\settings.json`.
 - Conversaciones: `%LOCALAPPDATA%\Agentest\conversations\<id>.json`.
 - **Abrir carpeta local** permite consultar esos archivos. Los mensajes y las respuestas se guardan como JSON legible; evita introducir secretos en la plantilla o la URL.
 - La escritura usa un archivo temporal y reemplazo. Un historial inválido se conserva en disco y se informa al cargar. Solicitudes pendientes al reiniciar se marcan como interrumpidas.
+
+## Apariencia
+
+El botón **Tema**, junto al selector de agente, permite elegir **Sistema**, **Claro** u **Oscuro**. Por defecto se usa Sistema. Cada selección se guarda en `settings.json` y se restaura al abrir la aplicación.
+
+Sistema toma el modo de aplicaciones de Windows y actualiza la apariencia al recibir cambios de preferencias. Claro y Oscuro mantienen la elección del usuario. El tema se aplica al chat, los campos, los botones y el editor de perfiles, conservando el borrador. Se usan una paleta propia y las [API de color de WinForms](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.application.setcolormode?view=windowsdesktop-10.0); el soporte nativo del tema del sistema corresponde a Windows 11 o posterior.
+
+## Perfil para Agente Tesito
+
+Según el OpenAPI local consultado, configura:
+
+- Endpoint: `http://127.0.0.1:8000/api/v1/conversations/runs`.
+- Método: `POST`.
+- Ruta del texto de respuesta: `response`.
+- Ruta de ID de conversación: `conversation_id`.
+- Activa **El backend crea el ID (enviar null al inicio)**.
+- Desactiva adjuntos: el contrato `RunCreate` no admite esos campos.
+- El OpenAPI consultado no declara autenticación; deja la credencial vacía salvo que tu despliegue la exija.
+
+```json
+{
+  "message": "{{message}}",
+  "conversation_id": "{{conversationId}}"
+}
+```
+
+El primer request envía `conversation_id: null`; el backend crea la conversación. Los siguientes usan el UUID devuelto por la API. Si esta opción está desactivada, se mantiene el comportamiento anterior: se envía el ID local en el primer request. En Tesito, un ID local no registrado puede provocar 404 aunque la ruta sea correcta.
+
+`/openapi.json` es el documento de descripción, no el endpoint del chat. Este contrato difiere del ejemplo inicial `query`/`answer`. Los errores HTTP muestran el detalle devuelto por el backend para distinguir una ruta inexistente de una conversación inexistente.
+
+El esquema de respuesta permite estados `running`, `completed`, `failed` e `interrupted`, y `response` puede ser null. La integración actual muestra una respuesta textual completa; no consulta automáticamente `GET /api/v1/runs/{run_id}` si el backend deja la ejecución en curso.
 
 ## Organización
 
